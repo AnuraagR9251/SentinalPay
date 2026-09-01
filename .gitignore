@@ -1,0 +1,46 @@
+# Secrets — never commit
+.env
+.env.local
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Tests / tooling
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Datasets and model artefacts (may resemble PII structure or grow large)
+*.csv
+*.tsv
+*.parquet
+*.xlsx
+*.xls
+*.pkl
+*.pickle
+*.joblib
+*.h5
+*.keras
+data/
+dataset/
+datasets/
+models/
+ml/artifacts/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
