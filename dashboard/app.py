@@ -27,6 +27,7 @@ try:
     from data_simulator import SimulatedStream  # type: ignore  # noqa: E402
 except ImportError:
     from dashboard.data_simulator import SimulatedStream  # noqa: E402
+from detection.constants import ALLOW_MAX, HOLD_MAX, STEP_UP_MAX  # noqa: E402
 from detection.models import (  # noqa: E402
     FeatureContribution,
     PaymentRiskLabel,
@@ -209,6 +210,59 @@ def _kpi_row(n_queued: int, n_legit: int, n_step: int, n_hold: int, n_block: int
         col.metric(label, int(value), help=hint)
 
 
+def _score_action(score: float) -> str:
+    if score <= ALLOW_MAX:
+        return "Legit"
+    if score <= STEP_UP_MAX:
+        return "Step-up"
+    if score <= HOLD_MAX:
+        return "Hold"
+    return "Block"
+
+
+def _risk_distribution_chart(scores: list[float]) -> None:
+    """Histogram with solid tier bands instead of dotted cutover lines."""
+    frame = pd.DataFrame({"score": scores, "Action": [_score_action(s) for s in scores]})
+    color_map = {
+        "Legit": COLOR_LEGIT,
+        "Step-up": COLOR_STEP,
+        "Hold": COLOR_HOLD,
+        "Block": COLOR_BLOCK,
+    }
+    hist = px.histogram(
+        frame,
+        x="score",
+        color="Action",
+        color_discrete_map=color_map,
+        category_orders={"Action": ["Legit", "Step-up", "Hold", "Block"]},
+        nbins=16,
+    )
+    bands = (
+        (0.0, ALLOW_MAX, COLOR_LEGIT),
+        (ALLOW_MAX, STEP_UP_MAX, COLOR_STEP),
+        (STEP_UP_MAX, HOLD_MAX, COLOR_HOLD),
+        (HOLD_MAX, 1.0, COLOR_BLOCK),
+    )
+    for x0, x1, color in bands:
+        hist.add_vrect(x0=x0, x1=x1, fillcolor=color, opacity=0.18, line_width=0, layer="below")
+    hist.update_layout(
+        height=420,
+        margin=dict(l=40, r=16, t=24, b=48),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font_color="#c5d0dc",
+        font_family="IBM Plex Sans",
+        xaxis_title="Risk score",
+        yaxis_title="Count",
+        bargap=0.08,
+        legend_title_text="",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+        yaxis=dict(dtick=1, tick0=0, rangemode="tozero", tickformat="d"),
+        xaxis=dict(range=[0, 1], dtick=0.2, ticks="outside"),
+    )
+    st.plotly_chart(hist, use_container_width=True)
+
+
 def _probability_bars(probabilities: tuple[tuple[str, float], ...]) -> None:
     label_map = {"LEGIT": "Legit", "SUSPICIOUS": "Suspicious", "LIKELY_FRAUD": "Risk"}
     rows = []
@@ -350,29 +404,7 @@ def main() -> None:
 
     with chart_col:
         st.subheader("Risk-score distribution")
-        hist = px.histogram(
-            pd.DataFrame({"score": scores}),
-            x="score",
-            nbins=16,
-            color_discrete_sequence=["#3ee0c5"],
-        )
-        hist.update_layout(
-            height=420,
-            margin=dict(l=40, r=16, t=24, b=48),
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            font_color="#c5d0dc",
-            font_family="IBM Plex Sans",
-            xaxis_title="Risk score",
-            yaxis_title="Count",
-            bargap=0.08,
-            yaxis=dict(dtick=1, tick0=0, rangemode="tozero", tickformat="d"),
-            xaxis=dict(range=[-0.02, 1.02], dtick=0.2, ticks="outside"),
-        )
-        hist.add_vline(x=0.40, line_dash="dot", line_color=COLOR_LEGIT)
-        hist.add_vline(x=0.55, line_dash="dot", line_color=COLOR_STEP)
-        hist.add_vline(x=0.70, line_dash="dot", line_color=COLOR_BLOCK)
-        st.plotly_chart(hist, use_container_width=True)
+        _risk_distribution_chart(scores)
 
     pair = _find_pair(pairs, st.session_state.selected_txn_id)
     if pair is not None:
