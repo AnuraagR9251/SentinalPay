@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from xgboost import XGBClassifier
+import xgboost as xgb
 
 from detection.ml_classifier import classify_payment, reset_model_cache
 from detection.models import PaymentRiskLabel, Transaction
@@ -53,17 +53,15 @@ def test_classify_payment_on_tiny_trained_model(tmp_path: Path, monkeypatch: pyt
     x[:30, 0] = 100
     x[30:60, 0] = 20_000
     x[60:, 0] = 200_000
-    model = XGBClassifier(
-        n_estimators=20,
-        max_depth=3,
-        objective="multi:softprob",
-        num_class=3,
-        verbosity=0,
+    dtrain = xgb.DMatrix(x, label=y)
+    booster = xgb.train(
+        {"objective": "multi:softprob", "num_class": 3, "max_depth": 3, "verbosity": 0},
+        dtrain,
+        num_boost_round=20,
     )
-    model.fit(x, y)
     model_path = tmp_path / "payment_risk_xgb.json"
     meta_path = tmp_path / "model_meta.json"
-    model.save_model(model_path)
+    booster.save_model(model_path)
     meta_path.write_text(
         json.dumps(
             {

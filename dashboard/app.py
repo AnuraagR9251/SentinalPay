@@ -23,13 +23,10 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# Streamlit caches imports across reruns. Evict detection only — never
-# `dashboard`, because this file is already running as dashboard.app.
-for _mod in list(sys.modules):
-    if _mod == "detection" or _mod.startswith("detection."):
-        del sys.modules[_mod]
-
-from data_simulator import SimulatedStream  # noqa: E402
+try:
+    from data_simulator import SimulatedStream  # type: ignore  # noqa: E402
+except ImportError:
+    from dashboard.data_simulator import SimulatedStream  # noqa: E402
 from detection.models import (  # noqa: E402
     FeatureContribution,
     PaymentRiskLabel,
@@ -38,13 +35,14 @@ from detection.models import (  # noqa: E402
     Transaction,
 )
 
-# Four architecture actions: Legit / Step-up / Hold / Block
-TIER_COLORS = {
-    RiskTier.ALLOW: "#1B7F4E",
-    RiskTier.STEP_UP: "#C47B17",
-    RiskTier.HOLD: "#B45309",
-    RiskTier.BLOCK: "#C0392B",
-}
+# One semantic palette — used for KPIs, badges, probability bars, and feature bars.
+COLOR_LEGIT = "#1B7F4E"
+COLOR_STEP = "#C47B17"
+COLOR_HOLD = "#B45309"
+COLOR_BLOCK = "#C0392B"
+COLOR_IDLE = "#3a4a5c"
+COLOR_QUEUED = "#3ee0c5"
+
 TIER_LABELS = {
     RiskTier.ALLOW: "Legit",
     RiskTier.STEP_UP: "Step-up",
@@ -63,10 +61,10 @@ RISK_LABELS = {
     PaymentRiskLabel.LIKELY_FRAUD: "Risk",
 }
 RISK_COLORS = {
-    "Legit": "#1B7F4E",
-    "Suspicious": "#C47B17",
-    "Risk": "#C0392B",
-    "—": "#4a5560",
+    "Legit": COLOR_LEGIT,
+    "Suspicious": COLOR_STEP,
+    "Risk": COLOR_BLOCK,
+    "—": COLOR_IDLE,
 }
 _CITY_CENTRES: tuple[tuple[str, float, float], ...] = (
     ("Pune", 18.5204, 73.8567),
@@ -83,19 +81,29 @@ st.set_page_config(
     page_title="SentinalPay · Fraud Desk",
     page_icon="SP",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
-st.markdown(
-    """
-    <style>
-      .stApp { background: #0f1419; color: #e8edf2; }
-      h1, h2, h3 { letter-spacing: -0.02em; }
-      div[data-testid="stMetricValue"] { font-variant-numeric: tabular-nums; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+_THEME = Path(__file__).with_name("theme.css").read_text(encoding="utf-8")
+st.markdown(f"<style>{_THEME}</style>", unsafe_allow_html=True)
+
+
+def _enum_value(item) -> str:
+    return str(getattr(item, "value", item))
+
+
+def _tier_label(tier) -> str:
+    return {t.value: name for t, name in TIER_LABELS.items()}.get(_enum_value(tier), "—")
+
+
+def _tier_action(tier) -> str:
+    return {t.value: name for t, name in TIER_ACTIONS.items()}.get(_enum_value(tier), "")
+
+
+def _risk_label(label) -> str:
+    if label is None:
+        return "—"
+    return {t.value: name for t, name in RISK_LABELS.items()}.get(_enum_value(label), "—")
 
 
 def _nearest_city(lat: float | None, lon: float | None) -> str:
@@ -134,31 +142,12 @@ def _rows(pairs: list[tuple[Transaction, RiskAssessment]]) -> pd.DataFrame:
                 "Payer location": _nearest_city(txn.lat, txn.lon),
                 "Payee location": _nearest_city(txn.payee_lat, txn.payee_lon),
                 "Risk score": round(assessment.score, 3),
-                "Action": TIER_LABELS[assessment.tier],
-                "Risk class": RISK_LABELS.get(assessment.ml_label, "—") if assessment.ml_label else "—",
+                "Action": _tier_label(assessment.tier),
+                "Risk class": _risk_label(assessment.ml_label),
                 "_tier": assessment.tier.value,
             }
         )
     return pd.DataFrame.from_records(records)
-
-
-def _style_tiers(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
-    def color_tier(value: str) -> str:
-        mapping = {
-            "Legit": "background-color: #1B7F4E; color: #ffffff;",
-            "Step-up": "background-color: #C47B17; color: #ffffff;",
-            "Hold": "background-color: #B45309; color: #ffffff;",
-            "Block": "background-color: #C0392B; color: #ffffff;",
-            "Suspicious": "background-color: #C47B17; color: #ffffff;",
-            "Risk": "background-color: #C0392B; color: #ffffff;",
-        }
-        return mapping.get(value, "")
-
-    visible = df.drop(columns=["_tier"], errors="ignore")
-    styled = visible.style.map(color_tier, subset=["Action"])
-    if "Risk class" in visible.columns:
-        styled = styled.map(color_tier, subset=["Risk class"])
-    return styled.format({"Amount (INR)": "₹{:,.2f}", "Risk score": "{:.3f}"})
 
 
 def _find_pair(
@@ -172,37 +161,117 @@ def _find_pair(
     return None
 
 
+def _inject_header(paused: bool) -> None:
+    live = "paused" if paused else "on"
+    label = "Paused" if paused else "Live"
+    st.markdown(
+        f"""
+        <div class="sp-top">
+          <div class="sp-brand-wrap">
+            <div class="sp-mark">SP</div>
+            <div>
+              <p class="sp-brand">SentinalPay</p>
+              <p class="sp-sub">UPI fraud desk · Legit · Step-up · Hold · Block</p>
+            </div>
+          </div>
+          <div class="sp-live {live}"><span class="sp-dot"></span>{label}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _signal_color(normalized: float) -> str:
+    """Same cutovers as the four risk actions, applied to a 0–1 feature signal."""
+    if normalized <= 0:
+        return COLOR_IDLE
+    if normalized <= 0.40:
+        return COLOR_LEGIT
+    if normalized <= 0.55:
+        return COLOR_STEP
+    if normalized <= 0.70:
+        return COLOR_HOLD
+    return COLOR_BLOCK
+
+
+def _kpi_row(n_queued: int, n_legit: int, n_step: int, n_hold: int, n_block: int, n_risk: int) -> None:
+    # Native metrics — custom HTML KPIs double-paint in Streamlit (QUEUEDED / LEGITIT).
+    tiles = (
+        ("Queued", n_queued, "Live window"),
+        ("Legit", n_legit, "Log only"),
+        ("Step-up", n_step, "OTP"),
+        ("Hold", n_hold, "Delayed"),
+        ("Block", n_block, "Lock"),
+        ("Risk", n_risk, "Model flag"),
+    )
+    cols = st.columns(6, gap="small")
+    for col, (label, value, hint) in zip(cols, tiles):
+        col.metric(label, int(value), help=hint)
+
+
+def _probability_bars(probabilities: tuple[tuple[str, float], ...]) -> None:
+    label_map = {"LEGIT": "Legit", "SUSPICIOUS": "Suspicious", "LIKELY_FRAUD": "Risk"}
+    rows = []
+    for name, prob in probabilities:
+        label = label_map.get(name, name)
+        color = RISK_COLORS.get(label, COLOR_IDLE)
+        width = max(2.0, float(prob) * 100.0)
+        rows.append(
+            f'<div class="sp-prob-row">'
+            f'<span class="name" style="color:{color}">{label}</span>'
+            f'<div class="track"><div class="fill" style="width:{width:.1f}%;background:{color}"></div></div>'
+            f'<span class="pct">{prob:.2f}</span></div>'
+        )
+    st.markdown(f'<div class="sp-prob">{"".join(rows)}</div>', unsafe_allow_html=True)
+
+
 def _breakdown_chart(contributions: tuple[FeatureContribution, ...]) -> None:
+    # Plot a visible stub for zeros so "did not fire" is distinct from "failed to render".
+    stub = 0.006
     frame = pd.DataFrame(
         {
             "Feature": [c.name.replace("_", " ") for c in contributions],
             "Weighted score": [c.weighted_score for c in contributions],
+            "Bar": [c.weighted_score if c.weighted_score > 0 else stub for c in contributions],
             "Normalized": [c.normalized for c in contributions],
             "Raw": [c.raw_value for c in contributions],
             "Weight": [c.weight for c in contributions],
+            "Fired": ["yes" if c.weighted_score > 0 else "no — no contribution" for c in contributions],
+            "Color": [_signal_color(c.normalized) for c in contributions],
         }
     )
     fig = px.bar(
         frame,
-        x="Weighted score",
+        x="Bar",
         y="Feature",
         orientation="h",
-        color="Weighted score",
-        color_continuous_scale=["#1B7F4E", "#C47B17", "#C0392B"],
-        range_color=(0, 0.2),
+        color="Color",
+        color_discrete_map={
+            COLOR_IDLE: COLOR_IDLE,
+            COLOR_LEGIT: COLOR_LEGIT,
+            COLOR_STEP: COLOR_STEP,
+            COLOR_HOLD: COLOR_HOLD,
+            COLOR_BLOCK: COLOR_BLOCK,
+        },
     )
     fig.update_layout(
         height=360,
         margin=dict(l=10, r=10, t=10, b=10),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        font_color="#e8edf2",
-        coloraxis_showscale=False,
+        font_color="#c5d0dc",
+        font_family="IBM Plex Sans",
+        showlegend=False,
         yaxis=dict(autorange="reversed"),
+        xaxis_title="Weighted score",
+    )
+    fig.update_traces(
+        customdata=frame[["Weighted score", "Fired"]].to_numpy(),
+        hovertemplate="%{y}<br>weighted=%{customdata[0]:.3f}<br>%{customdata[1]}<extra></extra>",
     )
     st.plotly_chart(fig, use_container_width=True)
     st.dataframe(
-        frame,
+        frame[["Feature", "Weighted score", "Normalized", "Raw", "Weight", "Fired"]],
         hide_index=True,
         use_container_width=True,
         column_config={
@@ -216,27 +285,19 @@ def _breakdown_chart(contributions: tuple[FeatureContribution, ...]) -> None:
 def main() -> None:
     _init_state()
     source: SimulatedStream = st.session_state.source
+    _inject_header(st.session_state.paused)
 
-    st.title("SentinalPay")
-    st.caption("UPI fraud desk · four actions: Legit · Step-up · Hold · Block")
-
-    sidebar = st.sidebar
-    sidebar.header("Feed controls")
-    st.session_state.paused = sidebar.checkbox("Pause live feed", value=st.session_state.paused)
-    cols = sidebar.columns(2)
-    if cols[0].button("Next batch", use_container_width=True):
+    c1, c2, c3, c4 = st.columns((2.2, 1, 1, 1))
+    st.session_state.paused = c1.toggle("Pause live feed", value=st.session_state.paused)
+    if c2.button("Next batch", use_container_width=True):
         source.next_batch(3)
-    if cols[1].button("Reset stream", use_container_width=True):
+    if c3.button("Reset stream", use_container_width=True):
         stream = SimulatedStream()
         stream.prime(18)
         st.session_state.source = stream
         st.session_state.selected_txn_id = None
         st.rerun()
-
-    sidebar.markdown(
-        "Data source: `SimulatedStream`. To use a real API later, "
-        "construct `HttpTransactionSource(base_url)` in `_init_state`."
-    )
+    c4.caption("SimulatedStream · swap later for HTTP")
 
     if not st.session_state.paused:
         source.next_batch(1)
@@ -247,26 +308,40 @@ def main() -> None:
         return
 
     scores = [a.score for _, a in pairs]
-    n_block = sum(1 for _, a in pairs if a.tier is RiskTier.BLOCK)
-    n_hold = sum(1 for _, a in pairs if a.tier is RiskTier.HOLD)
-    n_step = sum(1 for _, a in pairs if a.tier is RiskTier.STEP_UP)
-    n_legit = sum(1 for _, a in pairs if a.tier is RiskTier.ALLOW)
-    n_risk = sum(1 for _, a in pairs if a.ml_label is PaymentRiskLabel.LIKELY_FRAUD)
+    n_block = sum(1 for _, a in pairs if getattr(a.tier, "value", a.tier) == RiskTier.BLOCK.value)
+    n_hold = sum(1 for _, a in pairs if getattr(a.tier, "value", a.tier) == RiskTier.HOLD.value)
+    n_step = sum(1 for _, a in pairs if getattr(a.tier, "value", a.tier) == RiskTier.STEP_UP.value)
+    n_legit = sum(1 for _, a in pairs if getattr(a.tier, "value", a.tier) == RiskTier.ALLOW.value)
+    n_risk = sum(
+        1
+        for _, a in pairs
+        if a.ml_label is not None and getattr(a.ml_label, "value", a.ml_label) == PaymentRiskLabel.LIKELY_FRAUD.value
+    )
+    _kpi_row(len(pairs), n_legit, n_step, n_hold, n_block, n_risk)
 
-    m1, m2, m3, m4, m5, m6 = st.columns(6)
-    m1.metric("In buffer", f"{len(pairs)}")
-    m2.metric("Legit", f"{n_legit}")
-    m3.metric("Step-up", f"{n_step}")
-    m4.metric("Hold", f"{n_hold}")
-    m5.metric("Block", f"{n_block}")
-    m6.metric("Risk", f"{n_risk}")
-
-    feed_col, chart_col = st.columns((1.45, 1))
+    feed_col, chart_col = st.columns((1.45, 1), gap="medium")
     frame = _rows(pairs)
 
     with feed_col:
         st.subheader("Transaction feed")
-        st.dataframe(_style_tiers(frame), use_container_width=True, height=420)
+        visible = frame.drop(columns=["_tier"], errors="ignore")
+        st.dataframe(
+            visible,
+            hide_index=True,
+            use_container_width=True,
+            height=420,
+            column_config={
+                "Transaction ID": st.column_config.TextColumn("Transaction ID", width="medium"),
+                "Timestamp": st.column_config.TextColumn("Timestamp", width="medium"),
+                "Amount (INR)": st.column_config.NumberColumn("Amount (INR)", format="₹%.2f"),
+                "Payee": st.column_config.TextColumn("Payee", width="medium"),
+                "Payer location": st.column_config.TextColumn("Payer location", width="medium"),
+                "Payee location": st.column_config.TextColumn("Payee location", width="medium"),
+                "Risk score": st.column_config.NumberColumn("Risk score", format="%.3f"),
+                "Action": st.column_config.TextColumn("Action", width="small"),
+                "Risk class": st.column_config.TextColumn("Risk class", width="small"),
+            },
+        )
         options = frame["Transaction ID"].tolist()
         default_id = st.session_state.selected_txn_id
         index = options.index(default_id) if default_id in options else 0
@@ -279,62 +354,48 @@ def main() -> None:
             pd.DataFrame({"score": scores}),
             x="score",
             nbins=16,
-            color_discrete_sequence=["#3D8BFF"],
+            color_discrete_sequence=["#3ee0c5"],
         )
         hist.update_layout(
             height=420,
-            margin=dict(l=10, r=10, t=10, b=10),
+            margin=dict(l=40, r=16, t=24, b=48),
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
-            font_color="#e8edf2",
+            font_color="#c5d0dc",
+            font_family="IBM Plex Sans",
             xaxis_title="Risk score",
             yaxis_title="Count",
             bargap=0.08,
+            yaxis=dict(dtick=1, tick0=0, rangemode="tozero", tickformat="d"),
+            xaxis=dict(range=[-0.02, 1.02], dtick=0.2, ticks="outside"),
         )
-        hist.add_vline(x=0.40, line_dash="dot", line_color="#1B7F4E")
-        hist.add_vline(x=0.55, line_dash="dot", line_color="#C47B17")
-        hist.add_vline(x=0.70, line_dash="dot", line_color="#C0392B")
+        hist.add_vline(x=0.40, line_dash="dot", line_color=COLOR_LEGIT)
+        hist.add_vline(x=0.55, line_dash="dot", line_color=COLOR_STEP)
+        hist.add_vline(x=0.70, line_dash="dot", line_color=COLOR_BLOCK)
         st.plotly_chart(hist, use_container_width=True)
 
     pair = _find_pair(pairs, st.session_state.selected_txn_id)
     if pair is not None:
         txn, assessment = pair
-        st.subheader(f"Why {txn.transaction_id} scored {assessment.score:.3f}")
-        badge = TIER_LABELS[assessment.tier]
-        action = TIER_ACTIONS[assessment.tier]
-        st.markdown(
-            f"<span style='background:{TIER_COLORS[assessment.tier]};color:#fff;"
-            f"padding:4px 10px;border-radius:4px;font-weight:600'>{badge}</span>"
-            f"<span style='margin-left:10px;opacity:0.85'>{action}</span>",
-            unsafe_allow_html=True,
-        )
-        loc_a, loc_b = st.columns(2)
-        loc_a.markdown(f"**Payer location:** {_nearest_city(txn.lat, txn.lon)}")
-        loc_b.markdown(f"**Payee location:** {_nearest_city(txn.payee_lat, txn.payee_lon)}")
+        badge = _tier_label(assessment.tier)
+        action = _tier_action(assessment.tier)
+        st.subheader(f"Case {txn.transaction_id} · {assessment.score:.3f}")
+        loc_l, loc_r = st.columns(2)
+        loc_l.caption("Action")
+        loc_l.write(f"{badge} — {action}")
+        loc_r.caption("Risk class")
+        loc_r.write(_risk_label(assessment.ml_label))
+        pay_l, pay_r = st.columns(2)
+        pay_l.caption("Payer location")
+        pay_l.write(_nearest_city(txn.lat, txn.lon))
+        pay_r.caption("Payee location")
+        pay_r.write(_nearest_city(txn.payee_lat, txn.payee_lon))
         st.caption(
-            f"Amount ₹{txn.amount:,.2f} · purpose={txn.purpose or 'unknown'} · "
-            "payee shown for demo only · logs never contain this row's PII."
+            f"Amount ₹{txn.amount:,.2f} · {txn.timestamp.strftime('%Y-%m-%d %H:%M:%S')} · "
+            f"purpose={txn.purpose or 'unknown'} · payee shown for demo only."
         )
         if assessment.ml_label is not None:
-            risk_name = RISK_LABELS[assessment.ml_label]
-            st.markdown(
-                f"**Risk class:** <span style='background:{RISK_COLORS[risk_name]};color:#fff;"
-                f"padding:3px 8px;border-radius:4px'>{risk_name}</span>",
-                unsafe_allow_html=True,
-            )
-            label_map = {"LEGIT": "Legit", "SUSPICIOUS": "Suspicious", "LIKELY_FRAUD": "Risk"}
-            proba_df = pd.DataFrame(
-                [
-                    {"Risk class": label_map.get(name, name), "Probability": prob}
-                    for name, prob in assessment.ml_probabilities
-                ]
-            )
-            st.dataframe(
-                proba_df,
-                hide_index=True,
-                use_container_width=True,
-                column_config={"Probability": st.column_config.ProgressColumn(min_value=0, max_value=1, format="%.2f")},
-            )
+            _probability_bars(assessment.ml_probabilities)
         _breakdown_chart(assessment.contributions)
 
     if not st.session_state.paused:

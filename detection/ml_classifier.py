@@ -43,12 +43,17 @@ def _load_bundle() -> Optional[dict[str, Any]]:
     if not MODEL_PATH.exists() or not META_PATH.exists():
         logger.warning("ML artefacts missing — classify_payment disabled until `py -3 -m ml.train`")
         return None
-    from xgboost import XGBClassifier
+    try:
+        import xgboost as xgb
 
-    model = XGBClassifier()
-    model.load_model(MODEL_PATH)
-    meta = json.loads(META_PATH.read_text(encoding="utf-8"))
-    _BUNDLE = {"model": model, "meta": meta}
+        # Raw booster — avoids sklearn mixin `_estimator_type` after sklearn 1.9.
+        booster = xgb.Booster()
+        booster.load_model(MODEL_PATH)
+        meta = json.loads(META_PATH.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        logger.warning("ML artefacts unreadable: %s", type(exc).__name__)
+        return None
+    _BUNDLE = {"booster": booster, "meta": meta}
     return _BUNDLE
 
 
@@ -63,9 +68,16 @@ def classify_payment(transaction: Transaction) -> Optional[MLPrediction]:
     bundle = _load_bundle()
     if bundle is None:
         return None
+    import xgboost as xgb
+
     medians = bundle["meta"].get("category_medians") or {}
     vector = vector_from_transaction(transaction, category_medians=medians)
-    proba = bundle["model"].predict_proba(vector.reshape(1, -1))[0]
+    try:
+        raw = bundle["booster"].predict(xgb.DMatrix(vector.reshape(1, -1)))
+        proba = np.asarray(raw, dtype=np.float64).reshape(-1)
+    except (TypeError, ValueError) as exc:
+        logger.warning("ML inference unavailable: %s", type(exc).__name__)
+        return None
     winner = int(np.argmax(proba))
     label_name = bundle["meta"].get("id_to_label", ID_TO_LABEL).get(str(winner))
     if label_name is None:

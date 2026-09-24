@@ -1,0 +1,66 @@
+/* Senetinal Pay - Modern CSS & Animations */
+
+/* Laser Scanning Animation */
+@keyframes pulse-laser {
+  0%, 100% {
+    top: 6%;
+    opacity: 0.8;
+  }
+  50% {
+    top: 92%;
+    opacity: 1;
+  }
+}
+
+.animate-laser {
+  animation: pulse-laser 2.2s ease-in-out infinite alternate;
+}
+
+/* Hide scrollbars */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Keypad button active bounce */
+.keypad-btn:active {
+  transform: scale(0.94);
+  background-color: rgba(59, 130, 246, 0.25);
+}
+
+/* Modal fade animations */
+.modal-backdrop {
+  animation: fadeIn 0.2s ease-out forwards;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Phone Mockup Frame Mode */
+.device-frame-active {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  background-color: #020617;
+}
+
+.device-frame-active #app-container {
+  max-width: 420px;
+  height: 860px;
+  background-color: #0f172a;
+  border-radius: 52px;
+  border: 10px solid #1e293b;
+  box-shadow: 0 25px 60px -15px rgba(30, 58, 138, 0.35);
+  overflow-y: auto;
+  position: relative;
+}
+
+.device-frame-active #app-container::-webkit-scrollbar {
+  display: none;
+}

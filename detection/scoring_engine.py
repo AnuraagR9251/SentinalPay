@@ -114,6 +114,84 @@ def _contribute(name: str, raw: Optional[float], normalized: float) -> FeatureCo
     )
 
 
+# Normalized behavioural + location features shared by the rule score and XGBoost.
+FEATURE_VECTOR_NAMES: tuple[str, ...] = (
+    "amount_zscore",
+    "new_payee",
+    "velocity_5m",
+    "velocity_60m",
+    "time_since_last",
+    "dist_from_home",
+    "dist_from_last",
+    "impossible_travel",
+    "vpn_proxy",
+    "missing_location",
+)
+
+
+def _compute_contributions(
+    txn: Transaction,
+    prior: Sequence[Transaction],
+    profile: UserProfile,
+) -> tuple[FeatureContribution, ...]:
+    """Build the per-feature breakdown. Pure: no I/O, no mutation."""
+    zscore = behavioural.amount_zscore(txn, prior)
+    new_payee = behavioural.is_new_payee(txn, prior, profile)
+    vel_5m = behavioural.velocity(txn, prior, VELOCITY_5M_SECONDS)
+    vel_60m = behavioural.velocity(txn, prior, VELOCITY_60M_SECONDS)
+    gap = behavioural.seconds_since_last(txn, prior)
+
+    dist_home = location.distance_from_home(txn, profile)
+    dist_last = location.distance_from_last(txn, prior)
+    speed = location.implied_travel_speed_kmh(txn, prior)
+    vpn = location.is_vpn_or_proxy(txn.ip_address)
+    missing_geo = not location.has_coordinates(txn)
+
+    return (
+        _contribute("amount_zscore", zscore, _normalise_zscore(zscore)),
+        _contribute("new_payee", 1.0 if new_payee else 0.0, 1.0 if new_payee else 0.0),
+        _contribute("velocity_5m", float(vel_5m), _normalise_ratio(float(vel_5m), float(VELOCITY_5M_LIMIT))),
+        _contribute("velocity_60m", float(vel_60m), _normalise_ratio(float(vel_60m), float(VELOCITY_60M_LIMIT))),
+        _contribute("time_since_last", gap, _normalise_time_since(gap)),
+        _contribute(
+            "dist_from_home",
+            dist_home,
+            _normalise_ratio(dist_home, HOME_DISTANCE_SATURATION_KM) if dist_home is not None else 0.0,
+        ),
+        _contribute(
+            "dist_from_last",
+            dist_last,
+            _normalise_ratio(dist_last, LAST_TXN_DISTANCE_SATURATION_KM) if dist_last is not None else 0.0,
+        ),
+        _contribute("impossible_travel", speed, _normalise_speed(speed)),
+        _contribute("vpn_proxy", 1.0 if vpn else 0.0, 1.0 if vpn else 0.0),
+        FeatureContribution(
+            name="missing_location",
+            raw_value=1.0 if missing_geo else 0.0,
+            normalized=1.0 if missing_geo else 0.0,
+            weight=MISSING_LOCATION_PENALTY,
+            weighted_score=MISSING_LOCATION_PENALTY if missing_geo else 0.0,
+        ),
+    )
+
+
+def extract_feature_vector(
+    transaction: Transaction | Mapping[str, Any],
+    history: Sequence[Transaction | Mapping[str, Any]],
+    user_profile: UserProfile | Mapping[str, Any],
+) -> dict[str, float]:
+    """Return the normalized behavioural + location feature vector.
+
+    Same signals `score_transaction` uses. The XGBoost trainer and the
+    `/score` API call this instead of re-implementing feature math.
+    """
+    txn = parse_transaction(transaction)
+    prior = parse_history(history)
+    profile = parse_user_profile(user_profile)
+    contributions = _compute_contributions(txn, prior, profile)
+    return {item.name: item.normalized for item in contributions}
+
+
 def score_transaction(
     transaction: Transaction | Mapping[str, Any],
     history: Sequence[Transaction | Mapping[str, Any]],
@@ -153,45 +231,7 @@ def score_transaction(
     txn = parse_transaction(transaction)
     prior = parse_history(history)
     profile = parse_user_profile(user_profile)
-
-    zscore = behavioural.amount_zscore(txn, prior)
-    new_payee = behavioural.is_new_payee(txn, prior, profile)
-    vel_5m = behavioural.velocity(txn, prior, VELOCITY_5M_SECONDS)
-    vel_60m = behavioural.velocity(txn, prior, VELOCITY_60M_SECONDS)
-    gap = behavioural.seconds_since_last(txn, prior)
-
-    dist_home = location.distance_from_home(txn, profile)
-    dist_last = location.distance_from_last(txn, prior)
-    speed = location.implied_travel_speed_kmh(txn, prior)
-    vpn = location.is_vpn_or_proxy(txn.ip_address)
-    missing_geo = not location.has_coordinates(txn)
-
-    contributions = (
-        _contribute("amount_zscore", zscore, _normalise_zscore(zscore)),
-        _contribute("new_payee", 1.0 if new_payee else 0.0, 1.0 if new_payee else 0.0),
-        _contribute("velocity_5m", float(vel_5m), _normalise_ratio(float(vel_5m), float(VELOCITY_5M_LIMIT))),
-        _contribute("velocity_60m", float(vel_60m), _normalise_ratio(float(vel_60m), float(VELOCITY_60M_LIMIT))),
-        _contribute("time_since_last", gap, _normalise_time_since(gap)),
-        _contribute(
-            "dist_from_home",
-            dist_home,
-            _normalise_ratio(dist_home, HOME_DISTANCE_SATURATION_KM) if dist_home is not None else 0.0,
-        ),
-        _contribute(
-            "dist_from_last",
-            dist_last,
-            _normalise_ratio(dist_last, LAST_TXN_DISTANCE_SATURATION_KM) if dist_last is not None else 0.0,
-        ),
-        _contribute("impossible_travel", speed, _normalise_speed(speed)),
-        _contribute("vpn_proxy", 1.0 if vpn else 0.0, 1.0 if vpn else 0.0),
-        FeatureContribution(
-            name="missing_location",
-            raw_value=1.0 if missing_geo else 0.0,
-            normalized=1.0 if missing_geo else 0.0,
-            weight=MISSING_LOCATION_PENALTY,
-            weighted_score=MISSING_LOCATION_PENALTY if missing_geo else 0.0,
-        ),
-    )
+    contributions = _compute_contributions(txn, prior, profile)
 
     score = _clip01(sum(item.weighted_score for item in contributions))
     ml = classify_payment(txn)
@@ -214,6 +254,8 @@ def score_transaction(
 
 
 __all__ = [
+    "FEATURE_VECTOR_NAMES",
     "ScoringValidationError",
+    "extract_feature_vector",
     "score_transaction",
 ]
