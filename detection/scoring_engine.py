@@ -1,9 +1,8 @@
-"""Stateless behavioural + location risk scoring for UPI transactions.
+"""Legacy feature helpers. Live payment scoring is risk.pipeline.
 
-`score_transaction` is a pure function of (transaction, history, profile):
-no globals, no I/O besides an optional info log of id+score, and no
-mutation of the caller's history. That contract is what lets a later
-FastAPI layer call it concurrently without race conditions.
+`score_transaction` remains for the Streamlit desk and unit tests.
+POST /score and POST /api/v1/transactions/evaluate do not use it for the
+final ALLOW / REVIEW / BLOCK decision.
 
 # TODO: apply rate limiting here before production use
 # TODO: persist via parameterized queries / ORM only — never string-formatted SQL
