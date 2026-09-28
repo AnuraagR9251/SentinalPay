@@ -96,3 +96,7 @@ class RiskAssessment:
     contributions: tuple[FeatureContribution, ...]
     ml_label: Optional[PaymentRiskLabel] = None
     ml_probabilities: tuple[tuple[str, float], ...] = ()
+    p_xgb: Optional[float] = None
+    p_ae: Optional[float] = None
+    p_graph: Optional[float] = None
+    p_hybrid: Optional[float] = None

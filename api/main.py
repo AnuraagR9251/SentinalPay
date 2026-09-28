@@ -1,11 +1,11 @@
 """FastAPI scoring service.
 
-POST /score  — behavioural + location features → XGBoost fraud probability
-GET  /health — process + model liveness
+POST /score         — payment app submits a txn; returns hybrid risk
+GET  /transactions  — fraud desk polls the live scored feed
+GET  /health        — process + model liveness
 
-The model is loaded once at startup. Per-request scoring is a pure function
-of (payload, that user's in-memory history snapshot, the model) — it does
-not mutate history, so concurrent requests cannot race.
+Scoring itself is a pure function of (payload, that user's history snapshot,
+the model). The feed/history append happens after the score is computed.
 
 # TODO: apply rate limiting here before production use
 # TODO: persist via parameterized queries / ORM only — never string-formatted SQL
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from math import isfinite
 from pathlib import Path
@@ -23,10 +24,19 @@ from typing import Any
 import joblib
 import numpy as np
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 
+from detection.autoencoder_scorer import score_autoencoder
+from detection.graph_features import (
+    GraphValidationError,
+    add_transaction,
+    empty_graph,
+    graph_signals,
+    score_graph,
+)
+from detection.privacy import mask_identifier
 from detection.scoring_engine import FEATURE_VECTOR_NAMES, extract_feature_vector
 from detection.validation import ScoringValidationError
 
@@ -68,6 +78,7 @@ class ScoreRequest(BaseModel):
     timestamp: datetime
     payer_location: PayerLocation
     is_new_payee: bool
+    purpose: str | None = None
 
     @field_validator("transaction_id", "payee_vpa", "user_id")
     @classmethod
@@ -76,6 +87,14 @@ class ScoreRequest(BaseModel):
         if not stripped:
             raise ValueError("field must be a non-empty string")
         return stripped
+
+    @field_validator("purpose")
+    @classmethod
+    def _strip_purpose(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
 
     @field_validator("amount")
     @classmethod
@@ -94,8 +113,26 @@ class ScoreResponse(BaseModel):
     transaction_id: str
     risk_score: float
     risk_tier: str
+    P_xgb: float
+    P_ae: float
+    P_graph: float
+    P_hybrid: float
+    structuring_flag: bool
     top_contributing_features: list[FeatureHit]
+    contributions: list[FeatureHit]
     action_required: bool
+
+
+class FeedItem(ScoreResponse):
+    """One live payment as stored for GET /transactions."""
+
+    user_id: str
+    amount: float
+    payee_vpa: str
+    timestamp: datetime
+    lat: float | None = None
+    lon: float | None = None
+    purpose: str | None = None
 
 
 class HealthResponse(BaseModel):
@@ -132,10 +169,7 @@ def _seed_history() -> dict[str, list[dict[str, Any]]]:
     now = datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc)
     payees = (
         "priya.p@oksbi",
-        "rohanv@senitenial",
-        "ananya.iyer@okhdfcbank",
         "zomato@icici",
-        "swiggy@hdfcbank",
         "kirana.pune@oksbi",
     )
     amounts = (180.0, 420.0, 95.0, 350.0, 240.0, 510.0, 160.0, 890.0)
@@ -205,18 +239,39 @@ def score_request(payload: ScoreRequest, history: list[dict[str, Any]], model: A
 
     x = np.asarray([[vector[name] for name in FEATURE_VECTOR_NAMES]], dtype=np.float32)
     p_xgb = float(model.predict_proba(x)[0, 1])
-    # TODO: extend to P_hybrid = 0.5*P_xgb + 0.3*P_ae + 0.2*P_graph once
-    # autoencoder and graph layers are trained (Review 3 milestone)
-    p_hybrid = p_xgb  # P(XGBoost) only until AE/graph are trained
+    p_ae = score_autoencoder(vector)
+    try:
+        add_transaction(TXN_GRAPH, txn)
+    except GraphValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    p_graph = score_graph(TXN_GRAPH, payload.user_id)
+    signals = graph_signals(TXN_GRAPH, payload.user_id)
+    # Placeholder weights pending Bayesian optimisation on a validation set.
+    p_hybrid = max(0.0, min(1.0, 0.5 * p_xgb + 0.3 * p_ae + 0.2 * p_graph))
 
-    risk_score = max(0.0, min(1.0, p_hybrid))
+    risk_score = p_hybrid
     risk_tier = _tier_for(risk_score)
-    logger.info("transaction_id=%s risk_score=%.4f", payload.transaction_id, risk_score)
+    logger.info(
+        "transaction_id=%s account=%s P_xgb=%.4f P_ae=%.4f P_graph=%.4f P_hybrid=%.4f",
+        payload.transaction_id,
+        mask_identifier(payload.user_id),
+        p_xgb,
+        p_ae,
+        p_graph,
+        p_hybrid,
+    )
+    hits = [FeatureHit(name=name, value=float(vector.get(name, 0.0))) for name in FEATURE_VECTOR_NAMES]
     return ScoreResponse(
         transaction_id=payload.transaction_id,
         risk_score=risk_score,
         risk_tier=risk_tier,
+        P_xgb=p_xgb,
+        P_ae=p_ae,
+        P_graph=p_graph,
+        P_hybrid=p_hybrid,
+        structuring_flag=bool(signals["structuring_flag"]),
         top_contributing_features=_top_features(vector, model),
+        contributions=hits,
         action_required=risk_tier != "ALLOW",
     )
 
@@ -232,6 +287,51 @@ app.add_middleware(
 
 MODEL = _load_model()
 USER_HISTORY: dict[str, list[dict[str, Any]]] = _seed_history()
+_FEED_MAX = max(10, int(os.getenv("SENTINALPAY_FEED_MAX", "100")))
+# Live scored payments from the app. Process-local — swap for a DB later.
+SCORED_FEED: deque[FeedItem] = deque(maxlen=_FEED_MAX)
+# In-memory MultiDiGraph for the demo. Move to a graph DB / persistent
+# store before production use — this process loses the graph on restart.
+TXN_GRAPH = empty_graph()
+for _rows in USER_HISTORY.values():
+    for _row in _rows:
+        try:
+            add_transaction(TXN_GRAPH, _row)
+        except GraphValidationError:
+            continue
+
+
+def _history_row(payload: ScoreRequest) -> dict[str, Any]:
+    return {
+        "transaction_id": payload.transaction_id,
+        "user_id": payload.user_id,
+        "amount": payload.amount,
+        "payee_vpa": payload.payee_vpa,
+        "timestamp": payload.timestamp,
+        "lat": payload.payer_location.lat,
+        "lon": payload.payer_location.lon,
+        "purpose": payload.purpose,
+    }
+
+
+def _remember(payload: ScoreRequest, result: ScoreResponse) -> None:
+    """Append after scoring so the current request stays a snapshot."""
+    rows = USER_HISTORY.setdefault(payload.user_id, [])
+    rows.append(_history_row(payload))
+    if len(rows) > 200:
+        del rows[:-200]
+    SCORED_FEED.appendleft(
+        FeedItem(
+            **result.model_dump(),
+            user_id=payload.user_id,
+            amount=payload.amount,
+            payee_vpa=payload.payee_vpa,
+            timestamp=payload.timestamp,
+            lat=payload.payer_location.lat,
+            lon=payload.payer_location.lon,
+            purpose=payload.purpose,
+        )
+    )
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -243,6 +343,13 @@ def health() -> HealthResponse:
 def score(payload: ScoreRequest) -> ScoreResponse:
     if MODEL is None:
         raise HTTPException(status_code=503, detail="model not loaded")
-    # Snapshot only — do not append the current txn (stateless under concurrency).
     history = list(USER_HISTORY.get(payload.user_id, ()))
-    return score_request(payload, history, MODEL)
+    result = score_request(payload, history, MODEL)
+    _remember(payload, result)
+    return result
+
+
+@app.get("/transactions", response_model=list[FeedItem])
+def transactions(limit: int = Query(default=50, ge=1, le=200)) -> list[FeedItem]:
+    """Newest-first live feed for the fraud desk."""
+    return list(SCORED_FEED)[:limit]

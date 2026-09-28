@@ -1,8 +1,7 @@
-"""SentinalPay analyst dashboard — Phase 1 Streamlit UI.
+"""SentinalPay analyst dashboard.
 
-Talks only to a `TransactionSource`. The default source is the in-process
-simulator; replace `SimulatedStream` with `HttpTransactionSource` when a
-FastAPI endpoint exists.
+Talks only to a `TransactionSource`. Default is `HttpTransactionSource`
+(GET /transactions from the scoring API the payment app already POSTs to).
 
 # TODO: apply rate limiting here before production use
 # TODO: persist via parameterized queries / ORM only — never string-formatted SQL
@@ -12,7 +11,6 @@ from __future__ import annotations
 
 import math
 import sys
-import time
 from pathlib import Path
 
 import pandas as pd
@@ -24,9 +22,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 try:
-    from data_simulator import SimulatedStream  # type: ignore  # noqa: E402
+    from data_simulator import HttpTransactionSource  # type: ignore  # noqa: E402
 except ImportError:
-    from dashboard.data_simulator import SimulatedStream  # noqa: E402
+    from dashboard.data_simulator import HttpTransactionSource  # noqa: E402
 from detection.constants import ALLOW_MAX, HOLD_MAX, STEP_UP_MAX  # noqa: E402
 from detection.models import (  # noqa: E402
     FeatureContribution,
@@ -121,10 +119,10 @@ def _nearest_city(lat: float | None, lon: float | None) -> str:
 
 
 def _init_state() -> None:
-    if "source" not in st.session_state:
-        stream = SimulatedStream()
-        stream.prime(18)
-        st.session_state.source = stream
+    if "source" not in st.session_state or not hasattr(st.session_state.source, "pull"):
+        source = HttpTransactionSource()
+        source.pull()
+        st.session_state.source = source
     if "paused" not in st.session_state:
         st.session_state.paused = False
     if "selected_txn_id" not in st.session_state:
@@ -163,23 +161,11 @@ def _find_pair(
 
 
 def _inject_header(paused: bool) -> None:
-    live = "paused" if paused else "on"
-    label = "Paused" if paused else "Live"
-    st.markdown(
-        f"""
-        <div class="sp-top">
-          <div class="sp-brand-wrap">
-            <div class="sp-mark">SP</div>
-            <div>
-              <p class="sp-brand">SentinalPay</p>
-              <p class="sp-sub">UPI fraud desk · Legit · Step-up · Hold · Block</p>
-            </div>
-          </div>
-          <div class="sp-live {live}"><span class="sp-dot"></span>{label}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    # Native widgets — custom HTML double-paints in Streamlit (SentinalPayay / LIVEVE).
+    brand, live = st.columns((5, 1))
+    brand.markdown("### SentinalPay")
+    brand.caption("UPI fraud desk · Legit · Step-up · Hold · Block")
+    live.markdown("**Paused**" if paused else "**LIVE**")
 
 
 def _signal_color(normalized: float) -> str:
@@ -336,29 +322,18 @@ def _breakdown_chart(contributions: tuple[FeatureContribution, ...]) -> None:
     )
 
 
-def main() -> None:
-    _init_state()
-    source: SimulatedStream = st.session_state.source
-    _inject_header(st.session_state.paused)
-
-    c1, c2, c3, c4 = st.columns((2.2, 1, 1, 1))
-    st.session_state.paused = c1.toggle("Pause live feed", value=st.session_state.paused)
-    if c2.button("Next batch", use_container_width=True):
-        source.next_batch(3)
-    if c3.button("Reset stream", use_container_width=True):
-        stream = SimulatedStream()
-        stream.prime(18)
-        st.session_state.source = stream
-        st.session_state.selected_txn_id = None
-        st.rerun()
-    c4.caption("SimulatedStream · swap later for HTTP")
-
+def _render_desk() -> None:
+    source: HttpTransactionSource = st.session_state.source
     if not st.session_state.paused:
         source.next_batch(1)
 
     pairs = source.snapshot()
     if not pairs:
-        st.info("Waiting for transactions.")
+        err = getattr(source, "last_error", None)
+        if err:
+            st.error(f"Score API unreachable ({err}). Start `uvicorn api.main:app --port 8000`.")
+        else:
+            st.info("Waiting for live payments from the app. Pay once in the frontend to populate this desk.")
         return
 
     scores = [a.score for _, a in pairs]
@@ -373,66 +348,122 @@ def main() -> None:
     )
     _kpi_row(len(pairs), n_legit, n_step, n_hold, n_block, n_risk)
 
-    feed_col, chart_col = st.columns((1.45, 1), gap="medium")
+    feed_col, case_col = st.columns((1.45, 1), gap="medium")
     frame = _rows(pairs)
+    feed_cols = [
+        "Transaction ID",
+        "Timestamp",
+        "Amount (INR)",
+        "Payee",
+        "Risk score",
+        "Action",
+        "Risk class",
+    ]
+    visible = frame[feed_cols]
 
     with feed_col:
         st.subheader("Transaction feed")
-        visible = frame.drop(columns=["_tier"], errors="ignore")
-        st.dataframe(
+        st.caption("Click a row to load the case.")
+        event = st.dataframe(
             visible,
             hide_index=True,
             use_container_width=True,
-            height=420,
+            height=320,
+            on_select="rerun",
+            selection_mode="single-row",
+            key="feed_table",
             column_config={
-                "Transaction ID": st.column_config.TextColumn("Transaction ID", width="medium"),
-                "Timestamp": st.column_config.TextColumn("Timestamp", width="medium"),
-                "Amount (INR)": st.column_config.NumberColumn("Amount (INR)", format="₹%.2f"),
+                "Transaction ID": st.column_config.TextColumn("ID", width="small"),
+                "Timestamp": st.column_config.TextColumn("Time", width="small"),
+                "Amount (INR)": st.column_config.NumberColumn("Amount", format="₹%.2f", width="small"),
                 "Payee": st.column_config.TextColumn("Payee", width="medium"),
-                "Payer location": st.column_config.TextColumn("Payer location", width="medium"),
-                "Payee location": st.column_config.TextColumn("Payee location", width="medium"),
-                "Risk score": st.column_config.NumberColumn("Risk score", format="%.3f"),
+                "Risk score": st.column_config.NumberColumn("Score", format="%.3f", width="small"),
                 "Action": st.column_config.TextColumn("Action", width="small"),
-                "Risk class": st.column_config.TextColumn("Risk class", width="small"),
+                "Risk class": st.column_config.TextColumn("Class", width="small"),
             },
         )
-        options = frame["Transaction ID"].tolist()
-        default_id = st.session_state.selected_txn_id
-        index = options.index(default_id) if default_id in options else 0
-        selected = st.selectbox("Inspect transaction", options, index=index)
-        st.session_state.selected_txn_id = selected
-
-    with chart_col:
-        st.subheader("Risk-score distribution")
-        _risk_distribution_chart(scores)
+        rows = list(getattr(getattr(event, "selection", None), "rows", None) or [])
+        if rows:
+            picked = str(visible.iloc[int(rows[0])]["Transaction ID"])
+            if picked != st.session_state.selected_txn_id:
+                st.session_state.selected_txn_id = picked
+                st.session_state.paused = True
+                st.rerun()
+        if not st.session_state.selected_txn_id and not visible.empty:
+            st.session_state.selected_txn_id = str(visible.iloc[0]["Transaction ID"])
 
     pair = _find_pair(pairs, st.session_state.selected_txn_id)
-    if pair is not None:
-        txn, assessment = pair
-        badge = _tier_label(assessment.tier)
-        action = _tier_action(assessment.tier)
-        st.subheader(f"Case {txn.transaction_id} · {assessment.score:.3f}")
-        loc_l, loc_r = st.columns(2)
-        loc_l.caption("Action")
-        loc_l.write(f"{badge} — {action}")
-        loc_r.caption("Risk class")
-        loc_r.write(_risk_label(assessment.ml_label))
-        pay_l, pay_r = st.columns(2)
-        pay_l.caption("Payer location")
-        pay_l.write(_nearest_city(txn.lat, txn.lon))
-        pay_r.caption("Payee location")
-        pay_r.write(_nearest_city(txn.payee_lat, txn.payee_lon))
-        st.caption(
-            f"Amount ₹{txn.amount:,.2f} · {txn.timestamp.strftime('%Y-%m-%d %H:%M:%S')} · "
-            f"purpose={txn.purpose or 'unknown'} · payee shown for demo only."
-        )
-        if assessment.ml_label is not None:
-            _probability_bars(assessment.ml_probabilities)
-        _breakdown_chart(assessment.contributions)
+    with case_col:
+        if pair is None:
+            st.subheader("Case")
+            st.info("Click a feed row to load payee, locations, and feature scores.")
+        else:
+            txn, assessment = pair
+            badge = _tier_label(assessment.tier)
+            action = _tier_action(assessment.tier)
+            st.subheader(f"Case {txn.transaction_id} · {assessment.score:.3f}")
+            loc_l, loc_r = st.columns(2)
+            loc_l.caption("Action")
+            loc_l.write(f"{badge} — {action}")
+            loc_r.caption("Risk class")
+            loc_r.write(_risk_label(assessment.ml_label))
+            pay_l, pay_r = st.columns(2)
+            pay_l.caption("Payer location")
+            pay_l.write(_nearest_city(txn.lat, txn.lon))
+            pay_r.caption("Payee location")
+            pay_r.write(_nearest_city(txn.payee_lat, txn.payee_lon))
+            who_l, who_r = st.columns(2)
+            who_l.caption("Payee")
+            who_l.write(txn.payee_vpa)
+            who_r.caption("Payer")
+            who_r.write(txn.user_id)
+            st.caption(
+                f"Amount ₹{txn.amount:,.2f} · {txn.timestamp.strftime('%Y-%m-%d %H:%M:%S')} · "
+                f"purpose={txn.purpose or 'unknown'}"
+            )
+            if assessment.p_hybrid is not None:
+                st.caption(
+                    f"P_xgb={assessment.p_xgb or 0:.3f} · "
+                    f"P_ae={assessment.p_ae or 0:.3f} · "
+                    f"P_graph={assessment.p_graph or 0:.3f} · "
+                    f"P_hybrid={assessment.p_hybrid:.3f}"
+                )
+            if assessment.ml_label is not None and assessment.ml_probabilities:
+                _probability_bars(assessment.ml_probabilities)
 
-    if not st.session_state.paused:
-        time.sleep(REFRESH_SECONDS)
+    if pair is not None:
+        st.subheader("Feature breakdown")
+        _breakdown_chart(pair[1].contributions)
+
+    st.subheader("Risk-score distribution")
+    _risk_distribution_chart(scores)
+
+
+@st.experimental_fragment(run_every=REFRESH_SECONDS)
+def _live_desk() -> None:
+    _render_desk()
+
+
+def main() -> None:
+    _init_state()
+    source: HttpTransactionSource = st.session_state.source
+    _inject_header(st.session_state.paused)
+
+    c1, c2, c3, c4 = st.columns((2.2, 1, 1, 1))
+    st.session_state.paused = c1.toggle("Pause live feed", value=st.session_state.paused)
+    if c2.button("Refresh now", use_container_width=True):
+        source.pull()
+    if c3.button("Clear view", use_container_width=True):
+        st.session_state.selected_txn_id = None
+        st.session_state.pop("feed_table", None)
+        source.pull()
         st.rerun()
+    c4.caption(f"GET {source.base_url}/transactions")
+
+    if st.session_state.paused:
+        _render_desk()
+    else:
+        _live_desk()
 
 
 if __name__ == "__main__":

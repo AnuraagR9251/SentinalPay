@@ -321,7 +321,8 @@ export const AppProvider = ({ children }) => {
           user_id: user.upiId,
           timestamp: new Date().toISOString(),
           payer_location: DEMO_LOCATION,
-          is_new_payee: !known.has(payee)
+          is_new_payee: !known.has(payee),
+          purpose: category || note || 'p2p_transfer'
         })
       });
       const data = await response.json();

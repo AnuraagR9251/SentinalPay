@@ -1,8 +1,5 @@
-@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap");
-
-html, body, [class*="css"], .stApp, .stMarkdown, .stText, p, label,
-[data-testid="stWidgetLabel"], [data-testid="stMarkdownContainer"] {
-  font-family: "IBM Plex Sans", system-ui, sans-serif;
+html, body, .stApp {
+  font-family: system-ui, sans-serif;
 }
 
 .stApp {
@@ -24,7 +21,7 @@ header[data-testid="stHeader"] { background: transparent; }
 }
 
 h1, h2, h3, .sp-brand {
-  font-family: "IBM Plex Sans", system-ui, sans-serif;
+  font-family: system-ui, sans-serif;
 }
 
 [data-testid="stHeading"] h2, [data-testid="stHeading"] h3 {
@@ -48,7 +45,7 @@ h1, h2, h3, .sp-brand {
   border-radius: 8px;
   background: linear-gradient(160deg, #3ee0c5 0%, #1a8f7a 100%);
   color: #04110e;
-  font-family: "IBM Plex Sans", system-ui, sans-serif;
+  font-family: system-ui, sans-serif;
   font-weight: 700;
   font-size: 13px;
   display: grid;
@@ -102,7 +99,7 @@ h1, h2, h3, .sp-brand {
 [data-testid="stHorizontalBlock"]:has([data-testid="stMetric"]) > div:nth-child(6) [data-testid="stMetric"] { border-left-color: #C0392B; }
 [data-testid="stMetricLabel"] { color: #8b9bb0; }
 [data-testid="stMetricValue"] {
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: ui-monospace, monospace;
   font-size: 1.55rem;
   line-height: 1.2;
   color: #f4f8fb;
@@ -141,9 +138,9 @@ h1, h2, h3, .sp-brand {
   padding: 10px 12px;
 }
 .sp-loc .k { font-size: 11px; color: #8b9bb0; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
-.sp-loc .v { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; margin-top: 4px; color: #e8eef4; }
+.sp-loc .v { font-family: ui-monospace, monospace; font-size: 13px; margin-top: 4px; color: #e8eef4; }
 
-div[data-testid="stMetricValue"] { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+div[data-testid="stMetricValue"] { font-family: ui-monospace, monospace; }
 [data-testid="stSidebar"] { background: #0d141d; border-right: 1px solid #1e2a3a; }
 
 .sp-prob { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 14px; }
@@ -151,7 +148,7 @@ div[data-testid="stMetricValue"] { font-family: "IBM Plex Mono", ui-monospace, m
 .sp-prob-row .name { font-size: 13px; font-weight: 600; }
 .sp-prob-row .track { height: 8px; background: #1e2a3a; border-radius: 999px; overflow: hidden; }
 .sp-prob-row .fill { height: 100%; border-radius: 999px; min-width: 2px; }
-.sp-prob-row .pct { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; text-align: right; color: #c5d0dc; }
+.sp-prob-row .pct { font-family: ui-monospace, monospace; font-size: 12px; text-align: right; color: #c5d0dc; }
 
 [data-testid="stDataFrame"] [role="columnheader"] {
   white-space: nowrap;

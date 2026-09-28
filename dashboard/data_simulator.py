@@ -10,14 +10,26 @@ rewrite required.
 
 from __future__ import annotations
 
+import json
+import os
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from random import Random
-from typing import Deque, Iterable, Protocol
+from typing import Any, Deque, Iterable, Protocol
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from detection import score_transaction
-from detection.models import RiskAssessment, Transaction, UserProfile
+from detection.constants import FEATURE_WEIGHTS
+from detection.models import (
+    FeatureContribution,
+    PaymentRiskLabel,
+    RiskAssessment,
+    RiskTier,
+    Transaction,
+    UserProfile,
+)
 
 BUFFER_MAX: int = 50
 STRUCTURING_AMOUNT: float = 49_900.0
@@ -341,27 +353,136 @@ class SimulatedStream:
         self.next_batch(n)
 
 
-class HttpTransactionSource:
-    """Placeholder for a future FastAPI-backed feed.
+def _parse_ts(raw: Any) -> datetime:
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+    text = str(raw).replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(text)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
-    The dashboard can be pointed at this class without changing UI logic.
+
+def _tier(raw: Any) -> RiskTier:
+    try:
+        return RiskTier(str(raw))
+    except ValueError:
+        return RiskTier.ALLOW
+
+
+def _ml_label(tier: RiskTier) -> PaymentRiskLabel:
+    if tier == RiskTier.ALLOW:
+        return PaymentRiskLabel.LEGIT
+    if tier == RiskTier.STEP_UP:
+        return PaymentRiskLabel.SUSPICIOUS
+    return PaymentRiskLabel.LIKELY_FRAUD
+
+
+def rows_from_feed(payload: Any) -> list[tuple[Transaction, RiskAssessment]]:
+    """Map GET /transactions JSON into the desk's (txn, assessment) pairs."""
+    if not isinstance(payload, list):
+        return []
+    pairs: list[tuple[Transaction, RiskAssessment]] = []
+    for item in payload:
+        if not isinstance(item, dict) or not item.get("transaction_id"):
+            continue
+        try:
+            amount = float(item["amount"])
+            score = float(item.get("risk_score") or item.get("P_hybrid") or 0.0)
+            if amount <= 0 or not (0.0 <= score <= 1.0):
+                continue
+            ts = _parse_ts(item["timestamp"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        txn = Transaction(
+            transaction_id=str(item["transaction_id"]),
+            user_id=str(item.get("user_id") or "unknown"),
+            amount=amount,
+            payee_vpa=str(item.get("payee_vpa") or "unknown"),
+            timestamp=ts,
+            lat=item.get("lat"),
+            lon=item.get("lon"),
+            payee_lat=item.get("payee_lat"),
+            payee_lon=item.get("payee_lon"),
+            purpose=item.get("purpose"),
+        )
+        hits = item.get("contributions") or item.get("top_contributing_features") or []
+        contributions: list[FeatureContribution] = []
+        if isinstance(hits, list):
+            for hit in hits:
+                if not isinstance(hit, dict) or not hit.get("name"):
+                    continue
+                try:
+                    normalized = max(0.0, min(1.0, float(hit.get("value", 0.0))))
+                except (TypeError, ValueError):
+                    continue
+                name = str(hit["name"])
+                weight = float(FEATURE_WEIGHTS.get(name, 0.0))
+                contributions.append(
+                    FeatureContribution(
+                        name=name,
+                        raw_value=normalized,
+                        normalized=normalized,
+                        weight=weight,
+                        weighted_score=normalized * weight,
+                    )
+                )
+        tier = _tier(item.get("risk_tier"))
+        p_xgb = item.get("P_xgb")
+        p_ae = item.get("P_ae")
+        p_graph = item.get("P_graph")
+        p_hybrid = item.get("P_hybrid")
+        assessment = RiskAssessment(
+            transaction_id=txn.transaction_id,
+            score=score,
+            tier=tier,
+            contributions=tuple(contributions),
+            ml_label=_ml_label(tier),
+            ml_probabilities=(),
+            p_xgb=None if p_xgb is None else float(p_xgb),
+            p_ae=None if p_ae is None else float(p_ae),
+            p_graph=None if p_graph is None else float(p_graph),
+            p_hybrid=None if p_hybrid is None else float(p_hybrid),
+        )
+        pairs.append((txn, assessment))
+    return pairs
+
+
+class HttpTransactionSource:
+    """Live feed: GET {base_url}/transactions (payments the app already scored).
 
     # TODO: apply rate limiting here before production use
     # TODO: persist via parameterized queries / ORM only — never string-formatted SQL
     """
 
-    def __init__(self, base_url: str) -> None:
-        self.base_url = base_url.rstrip("/")
+    def __init__(self, base_url: str | None = None) -> None:
+        raw = (base_url or os.getenv("SENTINALPAY_SCORE_API") or "http://127.0.0.1:8000").strip()
+        self.base_url = raw.rstrip("/")
+        self._buffer: list[tuple[Transaction, RiskAssessment]] = []
+        self.last_error: str | None = None
+
+    def pull(self) -> list[tuple[Transaction, RiskAssessment]]:
+        req = Request(
+            f"{self.base_url}/transactions?limit=50",
+            headers={"Accept": "application/json"},
+            method="GET",
+        )
+        try:
+            with urlopen(req, timeout=3) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError, ValueError) as exc:
+            self.last_error = type(exc).__name__
+            return list(self._buffer)
+        self.last_error = None
+        self._buffer = rows_from_feed(payload)
+        return list(self._buffer)
 
     def next_batch(self, n: int = 1) -> list[tuple[Transaction, RiskAssessment]]:
-        raise NotImplementedError(
-            f"Wire this to GET {self.base_url}/transactions once the API exists"
-        )
+        del n
+        return self.pull()
 
     def snapshot(self) -> list[tuple[Transaction, RiskAssessment]]:
-        raise NotImplementedError(
-            f"Wire this to GET {self.base_url}/transactions once the API exists"
-        )
+        if not self._buffer and self.last_error is None:
+            self.pull()
+        return list(self._buffer)
 
 
 def iter_scored(pairs: Iterable[tuple[Transaction, RiskAssessment]]) -> Iterable[tuple[Transaction, RiskAssessment]]:

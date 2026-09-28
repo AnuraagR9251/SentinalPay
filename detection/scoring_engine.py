@@ -196,6 +196,9 @@ def score_transaction(
     transaction: Transaction | Mapping[str, Any],
     history: Sequence[Transaction | Mapping[str, Any]],
     user_profile: UserProfile | Mapping[str, Any],
+    graph: Any = None,
+    p_xgb: float | None = None,
+    include_hybrid: bool = False,
 ) -> RiskAssessment:
     """Compute a 0–1 risk score and per-feature breakdown.
 
@@ -235,6 +238,19 @@ def score_transaction(
 
     score = _clip01(sum(item.weighted_score for item in contributions))
     ml = classify_payment(txn)
+    p_ae = None
+    p_graph = None
+    p_hybrid = None
+    if include_hybrid or graph is not None:
+        vector = {item.name: item.normalized for item in contributions}
+        from detection.autoencoder_scorer import score_autoencoder
+        from detection.graph_features import score_graph
+
+        p_ae = score_autoencoder(vector)
+        p_graph = score_graph(graph, txn.user_id) if graph is not None else 0.0
+        xgb = 0.0 if p_xgb is None else max(0.0, min(1.0, float(p_xgb)))
+        # Placeholder weights pending Bayesian optimisation on a validation set.
+        p_hybrid = _clip01(0.5 * xgb + 0.3 * p_ae + 0.2 * p_graph)
     assessment = RiskAssessment(
         transaction_id=txn.transaction_id,
         score=score,
@@ -242,6 +258,10 @@ def score_transaction(
         contributions=contributions,
         ml_label=None if ml is None else ml.label,
         ml_probabilities=() if ml is None else ml.probabilities,
+        p_xgb=None if p_xgb is None else max(0.0, min(1.0, float(p_xgb))),
+        p_ae=p_ae,
+        p_graph=p_graph,
+        p_hybrid=p_hybrid,
     )
     log_score(logger, assessment.transaction_id, assessment.score)
     if ml is not None:
