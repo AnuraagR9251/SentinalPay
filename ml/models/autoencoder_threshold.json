@@ -1,0 +1,16 @@
+{
+  "threshold": 5.4380926849262295e-05,
+  "percentile": 95,
+  "feature_names": [
+    "amount_zscore",
+    "new_payee",
+    "velocity_5m",
+    "velocity_60m",
+    "time_since_last",
+    "dist_from_home",
+    "dist_from_last",
+    "impossible_travel",
+    "vpn_proxy",
+    "missing_location"
+  ]
+}
