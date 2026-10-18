@@ -25,7 +25,6 @@ try:
     from data_simulator import HttpTransactionSource  # type: ignore  # noqa: E402
 except ImportError:
     from dashboard.data_simulator import HttpTransactionSource  # noqa: E402
-from detection.constants import ALLOW_MAX, HOLD_MAX, STEP_UP_MAX  # noqa: E402
 from detection.models import (  # noqa: E402
     FeatureContribution,
     PaymentRiskLabel,
@@ -141,6 +140,7 @@ def _rows(pairs: list[tuple[Transaction, RiskAssessment]]) -> pd.DataFrame:
                 "Payer location": _nearest_city(txn.lat, txn.lon),
                 "Payee location": _nearest_city(txn.payee_lat, txn.payee_lon),
                 "Risk score": round(assessment.score, 3),
+                "Canonical": assessment.canonical_decision or "—",
                 "Action": _tier_label(assessment.tier),
                 "Risk class": _risk_label(assessment.ml_label),
                 "_tier": assessment.tier.value,
@@ -164,7 +164,7 @@ def _inject_header(paused: bool) -> None:
     # Native widgets — custom HTML double-paints in Streamlit (SentinalPayay / LIVEVE).
     brand, live = st.columns((5, 1))
     brand.markdown("### SentinalPay")
-    brand.caption("UPI fraud desk · Legit · Step-up · Hold · Block")
+    brand.caption("Sandbox desk · polls GET /transactions · not a bank feed")
     live.markdown("**Paused**" if paused else "**LIVE**")
 
 
@@ -181,34 +181,38 @@ def _signal_color(normalized: float) -> str:
     return COLOR_BLOCK
 
 
-def _kpi_row(n_queued: int, n_legit: int, n_step: int, n_hold: int, n_block: int, n_risk: int) -> None:
+def _kpi_row(n_queued: int, n_legit: int, n_step: int, n_hold: int, n_block: int, n_review: int) -> None:
     # Native metrics — custom HTML KPIs double-paint in Streamlit (QUEUEDED / LEGITIT).
     tiles = (
         ("Queued", n_queued, "Live window"),
-        ("Legit", n_legit, "Log only"),
-        ("Step-up", n_step, "OTP"),
-        ("Hold", n_hold, "Delayed"),
-        ("Block", n_block, "Lock"),
-        ("Risk", n_risk, "Model flag"),
+        ("Allow", n_legit, "Canonical ALLOW / legacy Allow"),
+        ("Step-up", n_step, "Policy action, not a canonical decision"),
+        ("Hold", n_hold, "Legacy HOLD (canonical REVIEW unless STEP_UP)"),
+        ("Block", n_block, "Canonical BLOCK"),
+        ("Review", n_review, "Canonical REVIEW count"),
     )
     cols = st.columns(6, gap="small")
     for col, (label, value, hint) in zip(cols, tiles):
         col.metric(label, int(value), help=hint)
 
 
-def _score_action(score: float) -> str:
-    if score <= ALLOW_MAX:
-        return "Legit"
-    if score <= STEP_UP_MAX:
-        return "Step-up"
-    if score <= HOLD_MAX:
-        return "Hold"
-    return "Block"
+def _opt_prob(value: float | None, available: bool) -> str:
+    if not available or value is None:
+        return "unavailable"
+    return f"{value:.3f}"
 
 
-def _risk_distribution_chart(scores: list[float]) -> None:
-    """Histogram with solid tier bands instead of dotted cutover lines."""
-    frame = pd.DataFrame({"score": scores, "Action": [_score_action(s) for s in scores]})
+def _risk_distribution_chart(pairs: list[tuple[Transaction, RiskAssessment]]) -> None:
+    """Histogram colored by the backend action, not invented score bands."""
+    if not pairs:
+        st.info("No scores yet.")
+        return
+    frame = pd.DataFrame(
+        {
+            "score": [assessment.score for _, assessment in pairs],
+            "Action": [_tier_label(assessment.tier) for _, assessment in pairs],
+        }
+    )
     color_map = {
         "Legit": COLOR_LEGIT,
         "Step-up": COLOR_STEP,
@@ -223,14 +227,6 @@ def _risk_distribution_chart(scores: list[float]) -> None:
         category_orders={"Action": ["Legit", "Step-up", "Hold", "Block"]},
         nbins=16,
     )
-    bands = (
-        (0.0, ALLOW_MAX, COLOR_LEGIT),
-        (ALLOW_MAX, STEP_UP_MAX, COLOR_STEP),
-        (STEP_UP_MAX, HOLD_MAX, COLOR_HOLD),
-        (HOLD_MAX, 1.0, COLOR_BLOCK),
-    )
-    for x0, x1, color in bands:
-        hist.add_vrect(x0=x0, x1=x1, fillcolor=color, opacity=0.18, line_width=0, layer="below")
     hist.update_layout(
         height=420,
         margin=dict(l=40, r=16, t=24, b=48),
@@ -238,7 +234,7 @@ def _risk_distribution_chart(scores: list[float]) -> None:
         plot_bgcolor="rgba(0,0,0,0)",
         font_color="#c5d0dc",
         font_family="IBM Plex Sans",
-        xaxis_title="Risk score",
+        xaxis_title="Risk score (0–1, from API)",
         yaxis_title="Count",
         bargap=0.08,
         legend_title_text="",
@@ -328,25 +324,27 @@ def _render_desk() -> None:
         source.next_batch(1)
 
     pairs = source.snapshot()
+    err = getattr(source, "last_error", None)
+    if err:
+        st.warning(
+            f"Score API error ({err}). Showing last successful feed if any. "
+            "Start `uvicorn api.main:app --port 8000`."
+        )
     if not pairs:
-        err = getattr(source, "last_error", None)
         if err:
-            st.error(f"Score API unreachable ({err}). Start `uvicorn api.main:app --port 8000`.")
+            st.error("No cached cases. Reconnect once the API is up.")
+        elif getattr(source, "last_ok_at", None):
+            st.info("Feed is empty. Score a sandbox payment in the React app.")
         else:
-            st.info("Waiting for live payments from the app. Pay once in the frontend to populate this desk.")
+            st.info("Waiting for the first successful GET /transactions.")
         return
 
-    scores = [a.score for _, a in pairs]
     n_block = sum(1 for _, a in pairs if getattr(a.tier, "value", a.tier) == RiskTier.BLOCK.value)
     n_hold = sum(1 for _, a in pairs if getattr(a.tier, "value", a.tier) == RiskTier.HOLD.value)
     n_step = sum(1 for _, a in pairs if getattr(a.tier, "value", a.tier) == RiskTier.STEP_UP.value)
     n_legit = sum(1 for _, a in pairs if getattr(a.tier, "value", a.tier) == RiskTier.ALLOW.value)
-    n_risk = sum(
-        1
-        for _, a in pairs
-        if a.ml_label is not None and getattr(a.ml_label, "value", a.ml_label) == PaymentRiskLabel.LIKELY_FRAUD.value
-    )
-    _kpi_row(len(pairs), n_legit, n_step, n_hold, n_block, n_risk)
+    n_review = sum(1 for _, a in pairs if a.canonical_decision == "REVIEW")
+    _kpi_row(len(pairs), n_legit, n_step, n_hold, n_block, n_review)
 
     feed_col, case_col = st.columns((1.45, 1), gap="medium")
     frame = _rows(pairs)
@@ -356,8 +354,8 @@ def _render_desk() -> None:
         "Amount (INR)",
         "Payee",
         "Risk score",
+        "Canonical",
         "Action",
-        "Risk class",
     ]
     visible = frame[feed_cols]
 
@@ -378,8 +376,8 @@ def _render_desk() -> None:
                 "Amount (INR)": st.column_config.NumberColumn("Amount", format="₹%.2f", width="small"),
                 "Payee": st.column_config.TextColumn("Payee", width="medium"),
                 "Risk score": st.column_config.NumberColumn("Score", format="%.3f", width="small"),
+                "Canonical": st.column_config.TextColumn("Canonical", width="small"),
                 "Action": st.column_config.TextColumn("Action", width="small"),
-                "Risk class": st.column_config.TextColumn("Class", width="small"),
             },
         )
         rows = list(getattr(getattr(event, "selection", None), "rows", None) or [])
@@ -403,15 +401,21 @@ def _render_desk() -> None:
             action = _tier_action(assessment.tier)
             st.subheader(f"Case {txn.transaction_id} · {assessment.score:.3f}")
             loc_l, loc_r = st.columns(2)
-            loc_l.caption("Action")
-            loc_l.write(f"{badge} — {action}")
-            loc_r.caption("Risk class")
-            loc_r.write(_risk_label(assessment.ml_label))
+            loc_l.caption("Canonical decision")
+            loc_l.write(assessment.canonical_decision or "—")
+            loc_r.caption("Legacy / policy action")
+            loc_r.write(f"{badge} — {action}")
             pay_l, pay_r = st.columns(2)
             pay_l.caption("Payer location")
-            pay_l.write(_nearest_city(txn.lat, txn.lon))
+            pay_l.write(
+                "omitted" if txn.lat is None or txn.lon is None else _nearest_city(txn.lat, txn.lon)
+            )
             pay_r.caption("Payee location")
-            pay_r.write(_nearest_city(txn.payee_lat, txn.payee_lon))
+            pay_r.write(
+                "unavailable"
+                if txn.payee_lat is None or txn.payee_lon is None
+                else _nearest_city(txn.payee_lat, txn.payee_lon)
+            )
             who_l, who_r = st.columns(2)
             who_l.caption("Payee")
             who_l.write(txn.payee_vpa)
@@ -421,22 +425,31 @@ def _render_desk() -> None:
                 f"Amount ₹{txn.amount:,.2f} · {txn.timestamp.strftime('%Y-%m-%d %H:%M:%S')} · "
                 f"purpose={txn.purpose or 'unknown'}"
             )
-            if assessment.p_hybrid is not None:
-                st.caption(
-                    f"P_xgb={assessment.p_xgb or 0:.3f} · "
-                    f"P_ae={assessment.p_ae or 0:.3f} · "
-                    f"P_graph={assessment.p_graph or 0:.3f} · "
-                    f"P_hybrid={assessment.p_hybrid:.3f}"
+            if assessment.ml_available is False:
+                xgb_txt = (
+                    f"{assessment.p_xgb:.3f} fallback prior"
+                    if assessment.p_xgb is not None
+                    else "unavailable"
                 )
+            else:
+                xgb_txt = _opt_prob(assessment.p_xgb, True)
+            st.caption(
+                f"P_xgb={xgb_txt} · "
+                f"P_ae={_opt_prob(assessment.p_ae, assessment.ae_available)} · "
+                f"P_graph={_opt_prob(assessment.p_graph, assessment.graph_available)} · "
+                f"legacy 0–1 score={assessment.score:.3f}"
+            )
             if assessment.ml_label is not None and assessment.ml_probabilities:
                 _probability_bars(assessment.ml_probabilities)
+            elif assessment.ml_label is None:
+                st.caption("No backend fraud class on this row — none invented.")
 
     if pair is not None:
         st.subheader("Feature breakdown")
         _breakdown_chart(pair[1].contributions)
 
     st.subheader("Risk-score distribution")
-    _risk_distribution_chart(scores)
+    _risk_distribution_chart(pairs)
 
 
 @st.experimental_fragment(run_every=REFRESH_SECONDS)
@@ -458,7 +471,14 @@ def main() -> None:
         st.session_state.pop("feed_table", None)
         source.pull()
         st.rerun()
-    c4.caption(f"GET {source.base_url}/transactions")
+    ok_at = getattr(source, "last_ok_at", None)
+    err = getattr(source, "last_error", None)
+    if err:
+        c4.caption(f"Disconnected · {err}")
+    elif ok_at:
+        c4.caption(f"Connected · {ok_at.strftime('%H:%M:%S UTC')}")
+    else:
+        c4.caption(f"GET {source.base_url}/transactions")
 
     if st.session_state.paused:
         _render_desk()

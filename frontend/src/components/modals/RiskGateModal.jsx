@@ -4,7 +4,7 @@ import { useApp } from '../../context/AppContext';
 
 export const RiskGateModal = () => {
   const { riskGateModal, setRiskGateModal, user } = useApp();
-  const { isOpen, phase, riskTier, riskScore, payeeName, amount } = riskGateModal;
+  const { isOpen, phase, riskTier, riskScore, payeeName, amount, canonicalDecision } = riskGateModal;
 
   if (!isOpen) return null;
 
@@ -30,7 +30,7 @@ export const RiskGateModal = () => {
           <p className="text-sm text-slate-400 mt-2">
             Scoring {user.currency}{Number(amount || 0).toLocaleString('en-IN')} to {payeeName || 'payee'}
           </p>
-          <p className="text-[11px] text-slate-500 mt-4">Live risk model — this is not instant on purpose.</p>
+          <p className="text-[11px] text-slate-500 mt-4">Demo risk engine — scoring is not a bank payment.</p>
         </div>
       </div>
     );
@@ -54,7 +54,7 @@ export const RiskGateModal = () => {
             Held before settlement to {payeeName || 'payee'}. No money has left your account.
           </p>
           <p className="text-[11px] text-slate-500 mt-3 font-mono">
-            {riskTier} · score {riskScore != null ? Number(riskScore).toFixed(3) : '—'}
+            {canonicalDecision || 'REVIEW'} → {riskTier} · score {riskScore != null ? Number(riskScore).toFixed(3) : '—'}
           </p>
           <button
             onClick={close}
@@ -83,7 +83,7 @@ export const RiskGateModal = () => {
             Sentinel blocked this transfer to {payeeName || 'payee'}. The transaction was not completed.
           </p>
           <p className="text-[11px] text-slate-500 mt-3 font-mono">
-            {riskTier} · score {riskScore != null ? Number(riskScore).toFixed(3) : '—'}
+            {canonicalDecision || 'BLOCK'} → {riskTier} · score {riskScore != null ? Number(riskScore).toFixed(3) : '—'}
           </p>
           <button
             onClick={close}

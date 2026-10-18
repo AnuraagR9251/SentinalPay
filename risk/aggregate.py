@@ -1,4 +1,10 @@
-"""Combine layer scores, explain them, and map to ALLOW / REVIEW / BLOCK."""
+"""Combine layer scores, then apply a configurable policy.
+
+`fraud_probability` is the model P(fraud) in [0, 1].
+`risk_score` is a 0–100 blend of rules, behavior, ML, and security.
+ALLOW / REVIEW / BLOCK is cut from `risk_score` using config thresholds
+(demo starting values, not calibrated operating points).
+"""
 
 from __future__ import annotations
 
@@ -43,7 +49,15 @@ def aggregate_and_decide(
         factors.append(RiskFactor(factor=f"Behavioral deviation: {item.feature}", impact=item.severity))
     for note in security.notes:
         factors.append(RiskFactor(factor=note, impact=_impact(15)))
-    if ml.fraud_probability >= 0.6:
+    if not ml.available:
+        factors.insert(
+            0,
+            RiskFactor(
+                factor="ML model unavailable — conservative prior 0.5; ALLOW disabled",
+                impact="HIGH",
+            ),
+        )
+    elif ml.fraud_probability >= 0.6:
         factors.append(
             RiskFactor(factor="Model assigned a high fraud probability", impact="HIGH")
         )
@@ -60,10 +74,20 @@ def aggregate_and_decide(
         decision = "BLOCK"
         confidence = max(0.55, risk_score / 100.0)
 
+    if not ml.available and decision == "ALLOW":
+        decision = "REVIEW"
+        confidence = min(confidence, 0.55)
+
     return DecisionResult(
         risk_score=risk_score,
         decision=decision,
         confidence=round(min(0.99, confidence), 2),
         risk_factors=tuple(factors),
         components=components,
+        fraud_probability=float(ml.fraud_probability),
+        policy={
+            "allow_max": config.allow_max,
+            "review_max": config.review_max,
+            "note": "demo starting cutovers on blended risk_score; fraud_probability is separate",
+        },
     )

@@ -38,10 +38,18 @@ def test_score_and_evaluate_share_pipeline() -> None:
     )
     assert scored.status_code == 200
     legacy = scored.json()
+    assert legacy["ae_available"] is False
+    assert legacy["graph_available"] is False
+    assert legacy["P_ae"] is None
+    assert legacy["P_graph"] is None
+    assert legacy["structuring_flag"] is None
     assert legacy["canonical_decision"] == canonical["decision"]
     assert legacy["canonical_risk_score"] == canonical["risk_score"]
-    assert legacy["risk_tier"] == {"ALLOW": "ALLOW", "REVIEW": "HOLD", "BLOCK": "BLOCK"}[canonical["decision"]]
-    assert legacy["risk_tier"] != "STEP_UP"
+    if canonical.get("action") == "STEP_UP":
+        assert legacy["risk_tier"] == "STEP_UP"
+        assert canonical["decision"] == "REVIEW"
+    else:
+        assert legacy["risk_tier"] == {"ALLOW": "ALLOW", "REVIEW": "HOLD", "BLOCK": "BLOCK"}[canonical["decision"]]
 
 
 def test_history_is_shared_across_entrypoints() -> None:

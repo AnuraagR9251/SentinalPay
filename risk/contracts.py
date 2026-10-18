@@ -21,6 +21,9 @@ class NormalizedTransaction:
     latitude: Optional[float]
     longitude: Optional[float]
     recent_failures: int = 0
+    payment_type: Optional[str] = None
+    origin_balance: Optional[float] = None
+    new_origin_balance: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,7 @@ class MlResult:
     fraud_probability: float
     model_version: str
     features: dict[str, float] = field(default_factory=dict)
+    available: bool = True
 
 
 @dataclass(frozen=True)
@@ -81,3 +85,5 @@ class DecisionResult:
     confidence: float
     risk_factors: tuple[RiskFactor, ...]
     components: dict[str, float] = field(default_factory=dict)
+    fraud_probability: float = 0.0
+    policy: dict[str, Any] = field(default_factory=dict)

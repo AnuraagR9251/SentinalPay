@@ -24,6 +24,8 @@ import { CheckBalanceModal } from './components/modals/CheckBalanceModal';
 import { ReceiptModal } from './components/modals/ReceiptModal';
 import { ProfileSettingsModal } from './components/profile/ProfileSettingsModal';
 import { NotificationModal } from './components/common/NotificationModal';
+import { LabPanel } from './components/lab/LabPanel';
+import { LoginModal } from './components/modals/LoginModal';
 
 import { ArrowRight, History, ArrowUpRight, ArrowDownLeft } from 'lucide-react';
 
@@ -45,6 +47,7 @@ const MainContent = () => {
             <div className="space-y-6 animate-fade-in">
               {/* Primary Balance Glance */}
               <BalanceCard />
+              <LabPanel />
 
               {/* 8-Grid Quick Actions */}
               <QuickActions />
@@ -144,10 +147,20 @@ const MainContent = () => {
   );
 };
 
+const Gate = () => {
+  const { sessionToken, requireLogin } = useApp();
+  return (
+    <>
+      {requireLogin && !sessionToken && <LoginModal />}
+      <MainContent />
+    </>
+  );
+};
+
 export default function App() {
   return (
     <AppProvider>
-      <MainContent />
+      <Gate />
     </AppProvider>
   );
 }

@@ -33,6 +33,9 @@ def test_decide_cutovers() -> None:
     quiet = SecuritySignals(False, False, False, False, 0)
     allow = aggregate_and_decide(quiet, empty_rules, empty_beh, MlResult(0.02, "xgb_v1"), cfg)
     assert allow.decision == "ALLOW"
+    assert allow.fraud_probability == 0.02
+    assert allow.risk_score != int(round(allow.fraud_probability * 100))
+    assert "allow_max" in allow.policy
     hot_rules = RuleResult(80, (TriggeredRule("HIGH_VELOCITY", "HIGH", 80, "burst"),))
     block = aggregate_and_decide(quiet, hot_rules, BehaviorResult(80, ()), MlResult(0.9, "xgb_v1"), cfg)
     assert block.decision == "BLOCK"

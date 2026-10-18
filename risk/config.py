@@ -29,8 +29,9 @@ class RiskConfig:
     weight_behavior: float = 0.25
     weight_ml: float = 0.40
     weight_security: float = 0.10
-    allow_max: float = 30.0
-    review_max: float = 70.0
+    # Demo starting policy on blended risk_score: 0–29 ALLOW, 30–69 REVIEW, 70–100 BLOCK.
+    allow_max: float = 29.0
+    review_max: float = 69.0
     velocity_5m_limit: int = 5
     velocity_1h_limit: int = 12
     amount_z_flag: float = 3.0
@@ -48,8 +49,8 @@ class RiskConfig:
             weight_behavior=_float("SENTINALPAY_WEIGHT_BEHAVIOR", 0.25),
             weight_ml=_float("SENTINALPAY_WEIGHT_ML", 0.40),
             weight_security=_float("SENTINALPAY_WEIGHT_SECURITY", 0.10),
-            allow_max=_float("SENTINALPAY_DECIDE_ALLOW_MAX", 30.0),
-            review_max=_float("SENTINALPAY_DECIDE_REVIEW_MAX", 70.0),
+            allow_max=_float("SENTINALPAY_DECIDE_ALLOW_MAX", 29.0),
+            review_max=_float("SENTINALPAY_DECIDE_REVIEW_MAX", 69.0),
             velocity_5m_limit=_int("SENTINALPAY_RULE_VELOCITY_5M", 5),
             velocity_1h_limit=_int("SENTINALPAY_RULE_VELOCITY_1H", 12),
             amount_z_flag=_float("SENTINALPAY_RULE_AMOUNT_Z", 3.0),

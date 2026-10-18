@@ -100,3 +100,7 @@ class RiskAssessment:
     p_ae: Optional[float] = None
     p_graph: Optional[float] = None
     p_hybrid: Optional[float] = None
+    canonical_decision: Optional[str] = None
+    ae_available: bool = False
+    graph_available: bool = False
+    ml_available: Optional[bool] = None

@@ -14,6 +14,7 @@ from risk.ml_layer import infer_fraud
 from risk.normalize import NormalizationError, normalize_transaction
 from risk.rules import run_rules
 from risk.security import inspect_security
+from risk.policy import policy_action
 from risk.store import RiskStore, get_store
 
 # ponytail: 50 km city-corridor heuristic. Upgrade: per-user commute ellipsoid from stored fixes.
@@ -79,6 +80,7 @@ def _result_payload(
             "duplicate_transaction": security.duplicate_transaction,
             "replay_detected": security.replay_detected,
             "invalid_request": security.invalid_request,
+            "rate_limited": security.rate_limited,
             "security_risk_score": security.security_risk_score,
         },
         "rules": {
@@ -98,7 +100,9 @@ def _result_payload(
         "ml": {
             "fraud_probability": round(ml.fraud_probability, 4),
             "model_version": ml.model_version,
+            "available": ml.available,
         },
+        "policy": dict(decision.policy),
         "risk_factors": [{"factor": f.factor, "impact": f.impact} for f in decision.risk_factors],
         "components": {k: round(v, 2) for k, v in decision.components.items()},
     }
@@ -128,6 +132,7 @@ def evaluate_transaction(
             security = dict(security)
             security["duplicate_transaction"] = True
             replay["security"] = security
+        replay["action"] = replay.get("action") or policy_action(replay)
         return replay
 
     security = inspect_security(txn, db, cfg, client_key=client_key)
@@ -151,5 +156,13 @@ def evaluate_transaction(
         engine_version=cfg.engine_version,
         elapsed_ms=elapsed_ms,
     )
-    db.persist(txn, security, rules, behavior, ml, decision, cfg.engine_version, elapsed_ms, result=result)
+    result["action"] = policy_action(result)
+    wrote = db.persist(txn, security, rules, behavior, ml, decision, cfg.engine_version, elapsed_ms, result=result)
+    if wrote is False:
+        cached = db.get_result(txn.transaction_id)
+        if cached is not None:
+            replay = dict(cached)
+            replay["idempotent"] = True
+            replay["action"] = replay.get("action") or policy_action(replay)
+            return replay
     return result

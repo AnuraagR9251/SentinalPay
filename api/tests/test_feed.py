@@ -9,7 +9,10 @@ def test_transactions_starts_empty() -> None:
     client = TestClient(app)
     response = client.get("/transactions")
     assert response.status_code == 200
-    assert response.json() == []
+    body = response.json()
+    assert body["count"] == 0
+    assert body["items"] == []
+    assert body["sandbox"] is True
 
 
 def test_score_then_feed_roundtrip() -> None:
@@ -22,7 +25,7 @@ def test_score_then_feed_roundtrip() -> None:
             "payee_vpa": "priya.p@oksbi",
             "user_id": "aarav@senitenial",
             "timestamp": "2026-09-28T10:00:00+00:00",
-            "payer_location": {"lat": 18.5204, "lon": 73.8567},
+            "payer_location": {"lat": 12.9716, "lon": 77.5946},
             "is_new_payee": False,
             "purpose": "Dining",
         },
@@ -33,10 +36,21 @@ def test_score_then_feed_roundtrip() -> None:
     assert "canonical_decision" in body
     feed = client.get("/transactions")
     assert feed.status_code == 200
-    rows = feed.json()
-    assert rows[0]["transaction_id"] == "tx-desk-1"
-    assert rows[0]["purpose"] == "dining"
-    assert "P_hybrid" in rows[0]
+    body = feed.json()
+    assert body["count"] == 1
+    case = body["items"][0]
+    assert case["payment"]["id"] == "tx-desk-1"
+    assert case["payment"]["purpose"] == "dining"
+    assert case["payment"]["user_id"] == "aarav@senitenial"
+    assert case["canonical"]["decision"] in {"ALLOW", "REVIEW", "BLOCK"}
+    assert 0 <= case["canonical"]["risk_score"] <= 100
+    assert case["canonical"]["scale"] == "0-100"
+    assert case["policy"]["legacy_tier"] in {"ALLOW", "STEP_UP", "HOLD", "BLOCK"}
+    assert 0.0 <= case["policy"]["legacy_score"] <= 1.0
+    assert case["models"]["autoencoder"]["available"] is False
+    assert case["models"]["autoencoder"]["value"] is None
+    assert case["models"]["graph"]["value"] is None
+    assert case["payment"]["location"]["status"] == "provided"
 
 
 def test_evaluate_endpoint() -> None:

@@ -36,16 +36,17 @@ def inspect_security(
     if replay:
         notes.append("possible replay of a recent payment")
 
-    epoch = txn.timestamp.timestamp()
-    per_min = store.cache.add(f"rl:{client_key}", epoch, 60.0)
+    request_ts = now.timestamp()
+    event_ts = txn.timestamp.timestamp()
+    per_min = store.cache.add(f"rl:{client_key}", request_ts, 60.0)
     rate_limited = per_min > config.rate_limit_per_min
     if rate_limited:
         notes.append("excessive request rate")
 
-    store.cache.add(f"user:{txn.user_id}:tx:5m", epoch, 300.0)
-    store.cache.add(f"user:{txn.user_id}:tx:1h", epoch, 3600.0)
+    store.cache.add(f"user:{txn.user_id}:tx:5m", event_ts, 300.0)
+    store.cache.add(f"user:{txn.user_id}:tx:1h", event_ts, 3600.0)
     if txn.device_id:
-        store.cache.add(f"device:{txn.device_id}:activity", epoch, 3600.0)
+        store.cache.add(f"device:{txn.device_id}:activity", event_ts, 3600.0)
         users = store.device_users(txn.device_id)
         if users >= config.device_user_cap and not store.known_device(txn.user_id, txn.device_id):
             notes.append("device linked to many users")

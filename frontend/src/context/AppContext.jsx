@@ -10,8 +10,10 @@ import {
   INITIAL_BILLS,
   INITIAL_REWARDS,
   INITIAL_TRANSACTIONS,
-  INITIAL_SPLIT_GROUPS
+  INITIAL_SPLIT_GROUPS,
+  DEMO_PROFILES
 } from '../data/mockData';
+import { loginViaGraphql, scoreViaGraphql, verifyPinViaGraphql } from '../api/graphql';
 
 const AppContext = createContext();
 
@@ -147,8 +149,23 @@ export const AppProvider = ({ children }) => {
     amount: 0
   });
 
-  const SCORE_API = import.meta.env.VITE_SCORE_API_URL || 'http://localhost:8000';
-  const DEMO_LOCATION = { lat: 18.5204, lon: 73.8567 };
+  const [sessionToken, setSessionToken] = useState(() => localStorage.getItem(`${STORAGE_KEY}_token`) || '');
+  const [authError, setAuthError] = useState('');
+  const [lastScore, setLastScore] = useState(null);
+  const requireLogin = import.meta.env.VITE_REQUIRE_LOGIN === '1';
+
+  const payerLocation = () => {
+    const loc = user.location || DEMO_PROFILES.find((item) => item.upiId === user.upiId)?.location;
+    if (loc && loc.lat != null && loc.lon != null) {
+      return { lat: loc.lat, lon: loc.lon };
+    }
+    return null;
+  };
+
+  const authHeaders = () => ({
+    'Content-Type': 'application/json',
+    ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {})
+  });
 
   // Sync to local storage
   useEffect(() => {
@@ -210,28 +227,26 @@ export const AppProvider = ({ children }) => {
   };
 
   // Execute transaction after PIN approval
-  const executePayment = ({ recipient, amount, category, method, note }) => {
+  const executePayment = ({ recipient, amount, category, method, note, transactionId }) => {
     const numAmount = parseFloat(amount);
     if (isNaN(numAmount) || numAmount <= 0) return;
 
-    // Deduct balance from selected bank or wallet
-    if (method.includes("Wallet")) {
+    if ((method || "").includes("Wallet")) {
       setUser(prev => ({
         ...prev,
         walletBalance: Math.max(0, prev.walletBalance - numAmount)
       }));
     } else {
       setBanks(prev => prev.map(bank => {
-        if (method.includes(bank.bankName) || bank.isPrimary) {
+        if ((method || "").includes(bank.bankName) || bank.isPrimary) {
           return { ...bank, balance: Math.max(0, bank.balance - numAmount) };
         }
         return bank;
       }));
     }
 
-    // Generate unique UTR
-    const utr = `SENT${Math.floor(100000000000 + Math.random() * 900000000000)}`;
-    const txId = `tx-${Date.now()}`;
+    const txId = transactionId || `sandbox-${Date.now()}`;
+    const utr = `DEMO-${txId}`;
 
     const newTx = {
       id: txId,
@@ -241,10 +256,10 @@ export const AppProvider = ({ children }) => {
       amount: numAmount,
       category: category || "Payment",
       timestamp: "Just now",
-      status: "Success",
+      status: "Sandbox",
       method: method || "SBI •••• 4821",
       utr,
-      note: note || "Paid via Senitenial Pay"
+      note: note || "Sandbox ledger only — not a bank settlement"
     };
 
     setTransactions(prev => [newTx, ...prev]);
@@ -257,9 +272,9 @@ export const AppProvider = ({ children }) => {
       awardedReward = {
         id: rewardId,
         type: "cashback",
-        title: "Cashback Reward",
+        title: "Demo cashback (sandbox)",
         amount: rewardAmt,
-        description: `Won on payment to ${recipient.name || "merchant"}`,
+        description: `Generated locally on sandbox debit to ${recipient.name || "merchant"}`,
         isScratched: false,
         expiryDate: "Valid for 7 days",
         code: `SENTINEL-WIN-${Math.floor(1000 + Math.random() * 9000)}`
@@ -311,26 +326,22 @@ export const AppProvider = ({ children }) => {
     });
 
     try {
-      const response = await fetch(`${SCORE_API}/score`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          transaction_id: transactionId,
+      const data = await scoreViaGraphql(
+        {
+          transactionId,
           amount: numAmount,
-          payee_vpa: payee,
-          user_id: user.upiId,
+          payeeVpa: payee,
+          userId: user.upiId,
           timestamp: new Date().toISOString(),
-          payer_location: DEMO_LOCATION,
-          is_new_payee: !known.has(payee),
+          payerLocation: payerLocation(),
+          deviceId: user.deviceId || null,
+          isNewPayee: !known.has(payee),
           purpose: category || note || 'p2p_transfer'
-        })
-      });
-      const data = await response.json();
-      console.log('[SentinalPay /score]', data);
-      if (!response.ok) {
-        setRiskGateModal((prev) => ({ ...prev, phase: 'error' }));
-        return;
-      }
+        },
+        authHeaders()
+      );
+      console.log('[SentinalPay /graphql score]', data);
+      setLastScore(data);
       const tier = data.risk_tier;
       if (tier === 'ALLOW') {
         setRiskGateModal({
@@ -341,7 +352,7 @@ export const AppProvider = ({ children }) => {
           payeeName: '',
           amount: 0
         });
-        executePayment({ recipient, amount: numAmount, category, method, note });
+        executePayment({ recipient, amount: numAmount, category, method, note, transactionId });
         return;
       }
       if (tier === 'STEP_UP') {
@@ -360,7 +371,7 @@ export const AppProvider = ({ children }) => {
           recipientName: recipient.name || recipient.billerName || 'Merchant',
           purpose: 'Sentinel step-up',
           onComplete: () => {
-            executePayment({ recipient, amount: numAmount, category, method, note });
+            executePayment({ recipient, amount: numAmount, category, method, note, transactionId });
           }
         });
         return;
@@ -370,7 +381,8 @@ export const AppProvider = ({ children }) => {
           ...prev,
           phase: 'hold',
           riskTier: tier,
-          riskScore: data.risk_score
+          riskScore: data.risk_score,
+          canonicalDecision: data.canonical_decision
         }));
         return;
       }
@@ -378,7 +390,8 @@ export const AppProvider = ({ children }) => {
         ...prev,
         phase: 'block',
         riskTier: tier,
-        riskScore: data.risk_score
+        riskScore: data.risk_score,
+        canonicalDecision: data.canonical_decision
       }));
     } catch (err) {
       console.log('[SentinalPay /score] error', err);
@@ -410,10 +423,10 @@ export const AppProvider = ({ children }) => {
         amount,
         category: "Rewards",
         timestamp: "Just now",
-        status: "Success",
+        status: "Sandbox",
         method: "Senitenial Wallet",
-        utr: `SENT${Math.floor(100000000000 + Math.random() * 900000000000)}`,
-        note: "Cashback credited to wallet"
+        utr: `DEMO-reward-${rewardId}`,
+        note: "Generated demo cashback — not a bank credit"
       };
       setTransactions(prev => [rewardTx, ...prev]);
     }
@@ -473,6 +486,109 @@ export const AppProvider = ({ children }) => {
   const addSplitGroup = (newSplit) => {
     sound.playTap();
     setSplits(prev => [newSplit, ...prev]);
+  };
+
+  const switchDemoUser = (profileId) => {
+    const profile = DEMO_PROFILES.find((item) => item.id === profileId);
+    if (!profile) return;
+    setUser((prev) => ({
+      ...prev,
+      name: profile.name,
+      upiId: profile.upiId,
+      city: profile.city,
+      location: profile.location,
+      deviceId: profile.deviceId,
+      walletBalance: profile.walletBalance
+    }));
+  };
+
+  const loginWithPassword = async (userId, password) => {
+    setAuthError('');
+    try {
+      const data = await loginViaGraphql(userId, password);
+      setSessionToken(data.token);
+      localStorage.setItem(`${STORAGE_KEY}_token`, data.token);
+      const profile = DEMO_PROFILES.find((item) => item.upiId === userId);
+      if (profile) switchDemoUser(profile.id);
+      else setUser((prev) => ({ ...prev, upiId: userId }));
+      return true;
+    } catch (err) {
+      setAuthError(err.message || 'Login failed');
+      return false;
+    }
+  };
+
+  const verifyPin = async (pin) => {
+    if (!sessionToken) return true;
+    try {
+      return await verifyPinViaGraphql(pin, authHeaders());
+    } catch {
+      return false;
+    }
+  };
+
+  const runLabScenario = async (id) => {
+    const now = new Date();
+    const location = payerLocation();
+    const base = {
+      user_id: user.upiId,
+      timestamp: now.toISOString(),
+      payer_location: location,
+      device_id: user.deviceId,
+      is_new_payee: id === 'new_payee'
+    };
+    const payloads = {
+      grocery: { ...base, transaction_id: `lab-groc-${Date.now()}`, amount: 240, payee_vpa: 'kirana.lab@oksbi', purpose: 'groceries' },
+      new_payee: { ...base, transaction_id: `lab-new-${Date.now()}`, amount: 48000, payee_vpa: `stranger.${Date.now()}@oksbi`, purpose: 'p2p_transfer' },
+      velocity: { ...base, transaction_id: `lab-vel-${Date.now()}`, amount: 900, payee_vpa: 'burst.lab@oksbi', purpose: 'p2p_transfer' },
+      replay: { ...base, transaction_id: 'lab-replay-fixed', amount: 500, payee_vpa: 'replay.lab@oksbi', purpose: 'dining' }
+    };
+    const body = payloads[id];
+    if (!body) return;
+    const toGql = (item) => ({
+      transactionId: item.transaction_id,
+      amount: item.amount,
+      payeeVpa: item.payee_vpa,
+      userId: item.user_id,
+      timestamp: item.timestamp,
+      payerLocation: item.payer_location,
+      deviceId: item.device_id || null,
+      isNewPayee: Boolean(item.is_new_payee),
+      purpose: item.purpose
+    });
+    if (id === 'velocity') {
+      for (let i = 0; i < 5; i += 1) {
+        await scoreViaGraphql(
+          toGql({ ...body, transaction_id: `lab-vel-${Date.now()}-${i}`, amount: 900 + i }),
+          authHeaders()
+        );
+      }
+    }
+    const data = await scoreViaGraphql(toGql(body), authHeaders());
+    setLastScore(data);
+    setRiskGateModal({
+      isOpen: true,
+      phase: data.risk_tier === 'BLOCK' ? 'block' : data.risk_tier === 'HOLD' || data.canonical_decision === 'REVIEW' ? 'hold' : data.risk_tier === 'STEP_UP' ? 'hold' : 'scanning',
+      riskTier: data.risk_tier,
+      riskScore: data.risk_score,
+      canonicalDecision: data.canonical_decision,
+      payeeName: body.payee_vpa,
+      amount: body.amount
+    });
+    if (data.risk_tier === 'ALLOW') {
+      setRiskGateModal((prev) => ({ ...prev, isOpen: false, phase: 'idle' }));
+    }
+    if (data.risk_tier === 'STEP_UP') {
+      setRiskGateModal((prev) => ({ ...prev, isOpen: false, phase: 'idle' }));
+      setUpiPinModal({
+        isOpen: true,
+        stepUp: true,
+        amount: body.amount,
+        recipientName: body.payee_vpa,
+        purpose: 'Sentinel step-up',
+        onComplete: () => {}
+      });
+    }
   };
 
   // Reset demo data
@@ -544,7 +660,15 @@ export const AppProvider = ({ children }) => {
         addBank,
         toggleCardFreeze,
         addSplitGroup,
-        resetToDemo
+        resetToDemo,
+        sessionToken,
+        authError,
+        lastScore,
+        requireLogin,
+        switchDemoUser,
+        loginWithPassword,
+        runLabScenario,
+        verifyPin
       }}
     >
       {children}

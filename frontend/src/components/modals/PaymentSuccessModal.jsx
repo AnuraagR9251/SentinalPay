@@ -33,14 +33,15 @@ export const PaymentSuccessModal = () => {
         {/* Success Title & Amount */}
         <div className="space-y-1 mb-6">
           <span className="text-xs uppercase tracking-wider font-bold text-emerald-400">
-            Payment Successful
+            Sandbox recorded
           </span>
           <h2 className="text-3xl font-black text-white font-heading">
             {user.currency}{transaction.amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
           </h2>
           <p className="text-sm text-slate-300 font-medium">
-            Paid to <span className="text-white font-semibold">{transaction.title}</span>
+            Simulated debit to <span className="text-white font-semibold">{transaction.title}</span>
           </p>
+          <p className="text-[11px] text-amber-300/90">Not a bank settlement — local demo ledger only.</p>
           <p className="text-xs text-slate-400">{transaction.timestamp}</p>
         </div>
 
@@ -51,7 +52,7 @@ export const PaymentSuccessModal = () => {
             <span className="text-slate-200 font-medium">{transaction.method}</span>
           </div>
           <div className="flex justify-between items-center text-slate-400">
-            <span>UPI Ref / UTR</span>
+            <span>Generated demo UTR</span>
             <span className="text-slate-200 font-mono text-[11px]">{transaction.utr}</span>
           </div>
           {transaction.note && (

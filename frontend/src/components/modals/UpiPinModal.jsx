@@ -4,7 +4,7 @@ import { useApp } from '../../context/AppContext';
 import { sound } from '../../utils/audio';
 
 export const UpiPinModal = () => {
-  const { upiPinModal, setUpiPinModal, user } = useApp();
+  const { upiPinModal, setUpiPinModal, user, verifyPin } = useApp();
   const { isOpen, amount, recipientName, purpose, onComplete, stepUp } = upiPinModal;
 
   const [pin, setPin] = useState('');
@@ -48,12 +48,17 @@ export const UpiPinModal = () => {
 
   const submitPin = (finalPin) => {
     setIsProcessing(true);
-    setTimeout(() => {
-      setUpiPinModal(prev => ({ ...prev, isOpen: false }));
+    Promise.resolve(verifyPin ? verifyPin(finalPin) : true).then((ok) => {
+      if (!ok) {
+        setIsProcessing(false);
+        setPin('');
+        return;
+      }
+      setUpiPinModal((prev) => ({ ...prev, isOpen: false }));
       if (onComplete) {
         onComplete(finalPin);
       }
-    }, 700);
+    });
   };
 
   return (

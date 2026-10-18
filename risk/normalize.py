@@ -105,6 +105,20 @@ def normalize_transaction(raw: Mapping[str, Any]) -> NormalizedTransaction:
     lon = _coord(raw, "longitude", "lon", lo=-180.0, hi=180.0)
     if (lat is None) ^ (lon is None):
         raise NormalizationError("latitude and longitude must be provided together")
+    origin = raw.get("origin_balance", raw.get("oldbalanceOrg"))
+    new_origin = raw.get("new_origin_balance", raw.get("newbalanceOrig"))
+    origin_balance = None
+    new_origin_balance = None
+    if origin not in (None, ""):
+        try:
+            origin_balance = float(origin)
+        except (TypeError, ValueError) as exc:
+            raise NormalizationError("origin_balance must be a number") from exc
+    if new_origin not in (None, ""):
+        try:
+            new_origin_balance = float(new_origin)
+        except (TypeError, ValueError) as exc:
+            raise NormalizationError("new_origin_balance must be a number") from exc
     return NormalizedTransaction(
         transaction_id=txn_id,
         user_id=user_id,
@@ -118,4 +132,7 @@ def normalize_transaction(raw: Mapping[str, Any]) -> NormalizedTransaction:
         latitude=lat,
         longitude=lon,
         recent_failures=recent_failures,
+        payment_type=_optional_str(raw, "payment_type", "type"),
+        origin_balance=origin_balance,
+        new_origin_balance=new_origin_balance,
     )

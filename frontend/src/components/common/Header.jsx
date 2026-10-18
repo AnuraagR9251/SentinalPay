@@ -36,13 +36,13 @@ export const Header = ({ searchQuery, setSearchQuery }) => {
               <span className="text-lg font-bold tracking-tight bg-gradient-to-r from-blue-400 via-indigo-300 to-emerald-400 bg-clip-text text-transparent font-heading">
                 Senitenial Pay
               </span>
-              <span className="text-[10px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20">
-                PRO
+              <span className="text-[10px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                SANDBOX
               </span>
             </div>
             <p className="text-[11px] text-slate-400 flex items-center gap-1">
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-              Sentinel AI Shield Active
+              Demo risk engine · not live UPI
             </p>
           </div>
         </div>

@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from risk.policy import policy_action
+
 # Compatibility only. REVIEW is a human queue, not an OTP step-up.
 _CANONICAL_TO_LEGACY = {
     "ALLOW": "ALLOW",
@@ -34,12 +36,17 @@ def pipeline_payload_from_score(raw: Mapping[str, Any]) -> dict[str, Any]:
         "timestamp": raw.get("timestamp"),
         "latitude": loc.get("lat"),
         "longitude": loc.get("lon"),
+        "device_id": raw.get("device_id"),
     }
 
 
 def legacy_fields_from_canonical(result: Mapping[str, Any]) -> dict[str, Any]:
     decision = str(result.get("decision") or "REVIEW")
-    tier = _CANONICAL_TO_LEGACY.get(decision, "HOLD")
+    action = str(result.get("action") or policy_action(result))
+    if action == "STEP_UP":
+        tier = "STEP_UP"
+    else:
+        tier = _CANONICAL_TO_LEGACY.get(decision, "HOLD")
     score_100 = int(result.get("risk_score") or 0)
     p_ml = float((result.get("ml") or {}).get("fraud_probability") or result.get("fraud_probability") or 0.0)
     hits = [
@@ -57,11 +64,18 @@ def legacy_fields_from_canonical(result: Mapping[str, Any]) -> dict[str, Any]:
         "risk_tier": tier,
         "canonical_decision": decision,
         "canonical_risk_score": score_100,
+        "action": action,
         "P_xgb": p_ml,
-        "P_ae": 0.0,
-        "P_graph": 0.0,
+        "P_ae": None,
+        "P_graph": None,
         "P_hybrid": score_100 / 100.0,
-        "structuring_flag": False,
+        "structuring_flag": None,
+        "ae_available": False,
+        "graph_available": False,
+        "structuring_available": False,
+        "ml_available": bool((result.get("ml") or {}).get("available"))
+        if isinstance(result.get("ml"), dict)
+        else None,
         "top_contributing_features": hits[:5],
         "contributions": hits,
         "action_required": tier != "ALLOW",

@@ -21,7 +21,6 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from detection import score_transaction
-from detection.constants import FEATURE_WEIGHTS
 from detection.models import (
     FeatureContribution,
     PaymentRiskLabel,
@@ -361,39 +360,107 @@ def _parse_ts(raw: Any) -> datetime:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-def _tier(raw: Any) -> RiskTier:
+def _tier(raw: Any) -> RiskTier | None:
     try:
         return RiskTier(str(raw))
     except ValueError:
-        return RiskTier.ALLOW
+        return None
 
 
-def _ml_label(tier: RiskTier) -> PaymentRiskLabel:
-    if tier == RiskTier.ALLOW:
-        return PaymentRiskLabel.LEGIT
-    if tier == RiskTier.STEP_UP:
-        return PaymentRiskLabel.SUSPICIOUS
-    return PaymentRiskLabel.LIKELY_FRAUD
+def merge_feed(
+    existing: list[tuple[Transaction, RiskAssessment]],
+    incoming: list[tuple[Transaction, RiskAssessment]],
+    limit: int = BUFFER_MAX,
+) -> list[tuple[Transaction, RiskAssessment]]:
+    """Last write wins per transaction_id; newest timestamp first."""
+    by_id: dict[str, tuple[Transaction, RiskAssessment]] = {
+        txn.transaction_id: (txn, assessment) for txn, assessment in existing
+    }
+    for txn, assessment in incoming:
+        by_id[txn.transaction_id] = (txn, assessment)
+    merged = sorted(
+        by_id.values(),
+        key=lambda pair: (pair[0].timestamp, pair[0].transaction_id),
+        reverse=True,
+    )
+    return merged[:limit]
+
+
+def feed_rows(payload: Any) -> list[Any] | None:
+    """Pull the case list out of either the nested envelope or a legacy array."""
+    if isinstance(payload, dict) and isinstance(payload.get("items"), list):
+        return payload["items"]
+    if isinstance(payload, list):
+        return payload
+    return None
+
+
+def _flatten_case(item: dict[str, Any]) -> dict[str, Any]:
+    """Normalize nested GET /transactions cases onto the desk's flat keys."""
+    payment = item.get("payment")
+    if not isinstance(payment, dict):
+        return item
+    location = payment.get("location") if isinstance(payment.get("location"), dict) else {}
+    canonical = item.get("canonical") if isinstance(item.get("canonical"), dict) else {}
+    policy = item.get("policy") if isinstance(item.get("policy"), dict) else {}
+    models = item.get("models") if isinstance(item.get("models"), dict) else {}
+    xgb = models.get("xgboost") if isinstance(models.get("xgboost"), dict) else {}
+    ae = models.get("autoencoder") if isinstance(models.get("autoencoder"), dict) else {}
+    graph = models.get("graph") if isinstance(models.get("graph"), dict) else {}
+    return {
+        "transaction_id": payment.get("id") or item.get("transaction_id"),
+        "user_id": payment.get("user_id"),
+        "amount": payment.get("amount"),
+        "payee_vpa": payment.get("payee_vpa"),
+        "timestamp": payment.get("timestamp"),
+        "lat": location.get("lat"),
+        "lon": location.get("lon"),
+        "purpose": payment.get("purpose"),
+        "risk_score": policy.get("legacy_score"),
+        "risk_tier": policy.get("legacy_tier") or policy.get("action"),
+        "canonical_decision": canonical.get("decision"),
+        "canonical_risk_score": canonical.get("risk_score"),
+        "P_xgb": xgb.get("value"),
+        "P_ae": ae.get("value"),
+        "P_graph": graph.get("value"),
+        "P_hybrid": policy.get("legacy_score"),
+        "ae_available": bool(ae.get("available")),
+        "graph_available": bool(graph.get("available")),
+        "ml_available": xgb.get("available"),
+        "contributions": item.get("triggered_signals") or [],
+    }
 
 
 def rows_from_feed(payload: Any) -> list[tuple[Transaction, RiskAssessment]]:
     """Map GET /transactions JSON into the desk's (txn, assessment) pairs."""
-    if not isinstance(payload, list):
+    rows = feed_rows(payload)
+    if rows is None:
         return []
     pairs: list[tuple[Transaction, RiskAssessment]] = []
-    for item in payload:
-        if not isinstance(item, dict) or not item.get("transaction_id"):
+    seen: set[str] = set()
+    for raw in rows:
+        if not isinstance(raw, dict):
+            continue
+        item = _flatten_case(raw)
+        if not item.get("transaction_id"):
+            continue
+        txn_id = str(item["transaction_id"])
+        if txn_id in seen:
             continue
         try:
             amount = float(item["amount"])
-            score = float(item.get("risk_score") or item.get("P_hybrid") or 0.0)
+            score = float(item.get("risk_score") if item.get("risk_score") is not None else item.get("P_hybrid") or 0.0)
             if amount <= 0 or not (0.0 <= score <= 1.0):
                 continue
             ts = _parse_ts(item["timestamp"])
         except (KeyError, TypeError, ValueError):
             continue
+        tier = _tier(item.get("risk_tier"))
+        if tier is None:
+            continue
+        seen.add(txn_id)
         txn = Transaction(
-            transaction_id=str(item["transaction_id"]),
+            transaction_id=txn_id,
             user_id=str(item.get("user_id") or "unknown"),
             amount=amount,
             payee_vpa=str(item.get("payee_vpa") or "unknown"),
@@ -414,33 +481,39 @@ def rows_from_feed(payload: Any) -> list[tuple[Transaction, RiskAssessment]]:
                     normalized = max(0.0, min(1.0, float(hit.get("value", 0.0))))
                 except (TypeError, ValueError):
                     continue
-                name = str(hit["name"])
-                weight = float(FEATURE_WEIGHTS.get(name, 0.0))
                 contributions.append(
                     FeatureContribution(
-                        name=name,
+                        name=str(hit["name"]),
                         raw_value=normalized,
                         normalized=normalized,
-                        weight=weight,
-                        weighted_score=normalized * weight,
+                        weight=0.0,
+                        weighted_score=normalized,
                     )
                 )
-        tier = _tier(item.get("risk_tier"))
         p_xgb = item.get("P_xgb")
         p_ae = item.get("P_ae")
         p_graph = item.get("P_graph")
         p_hybrid = item.get("P_hybrid")
+        ml_raw = item.get("ml_label")
+        try:
+            ml_label = PaymentRiskLabel(str(ml_raw)) if ml_raw else None
+        except ValueError:
+            ml_label = None
         assessment = RiskAssessment(
             transaction_id=txn.transaction_id,
             score=score,
             tier=tier,
             contributions=tuple(contributions),
-            ml_label=_ml_label(tier),
+            ml_label=ml_label,
             ml_probabilities=(),
             p_xgb=None if p_xgb is None else float(p_xgb),
             p_ae=None if p_ae is None else float(p_ae),
             p_graph=None if p_graph is None else float(p_graph),
             p_hybrid=None if p_hybrid is None else float(p_hybrid),
+            canonical_decision=item.get("canonical_decision"),
+            ae_available=bool(item.get("ae_available")),
+            graph_available=bool(item.get("graph_available")),
+            ml_available=item.get("ml_available"),
         )
         pairs.append((txn, assessment))
     return pairs
@@ -449,8 +522,8 @@ def rows_from_feed(payload: Any) -> list[tuple[Transaction, RiskAssessment]]:
 class HttpTransactionSource:
     """Live feed: GET {base_url}/transactions (payments the app already scored).
 
-    # TODO: apply rate limiting here before production use
-    # TODO: persist via parameterized queries / ORM only — never string-formatted SQL
+    Never falls back to SimulatedStream. Empty 200s clear the window.
+    Transport failures keep the last successful buffer.
     """
 
     def __init__(self, base_url: str | None = None) -> None:
@@ -458,6 +531,7 @@ class HttpTransactionSource:
         self.base_url = raw.rstrip("/")
         self._buffer: list[tuple[Transaction, RiskAssessment]] = []
         self.last_error: str | None = None
+        self.last_ok_at: datetime | None = None
 
     def pull(self) -> list[tuple[Transaction, RiskAssessment]]:
         req = Request(
@@ -471,8 +545,17 @@ class HttpTransactionSource:
         except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError, ValueError) as exc:
             self.last_error = type(exc).__name__
             return list(self._buffer)
+        rows = feed_rows(payload)
+        if rows is None:
+            self.last_error = "InvalidPayload"
+            return list(self._buffer)
+        incoming = rows_from_feed(payload)
         self.last_error = None
-        self._buffer = rows_from_feed(payload)
+        self.last_ok_at = datetime.now(timezone.utc)
+        if rows == []:
+            self._buffer = []
+        else:
+            self._buffer = merge_feed(self._buffer, incoming)
         return list(self._buffer)
 
     def next_batch(self, n: int = 1) -> list[tuple[Transaction, RiskAssessment]]:
@@ -480,7 +563,7 @@ class HttpTransactionSource:
         return self.pull()
 
     def snapshot(self) -> list[tuple[Transaction, RiskAssessment]]:
-        if not self._buffer and self.last_error is None:
+        if not self._buffer and self.last_error is None and self.last_ok_at is None:
             self.pull()
         return list(self._buffer)
 

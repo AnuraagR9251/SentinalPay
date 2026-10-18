@@ -18,7 +18,7 @@ export const BalanceCard = () => {
       <div className="flex items-center justify-between mb-4">
         <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-medium">
           <ShieldCheck className="w-3.5 h-3.5" />
-          <span>Sentinel Guard: {user.securityScore}</span>
+          <span>Sandbox · mock balances</span>
         </div>
 
         <button
@@ -33,7 +33,7 @@ export const BalanceCard = () => {
       {/* Balance display */}
       <div className="mb-4">
         <div className="flex items-center gap-2 text-slate-400 text-xs font-medium mb-1">
-          <span>Senitenial Reserve Balance</span>
+          <span>Demo wallet · not a bank account</span>
           <button
             onClick={() => setShowBalance(!showBalance)}
             className="hover:text-slate-200 transition-colors cursor-pointer"
@@ -47,7 +47,7 @@ export const BalanceCard = () => {
             {showBalance ? `${user.currency} ${user.walletBalance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : '••••••••'}
           </span>
           <span className="text-xs px-2 py-0.5 rounded-md bg-blue-500/20 text-blue-300 font-semibold">
-            Instant UPI
+            Simulated
           </span>
         </div>
       </div>
