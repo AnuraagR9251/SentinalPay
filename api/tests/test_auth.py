@@ -151,6 +151,19 @@ def test_evaluate_rejects_other_user_when_login_on(monkeypatch) -> None:
     assert own.status_code == 200
 
 
+def test_health_reports_ae_status() -> None:
+    client = TestClient(app)
+    health = client.get("/health").json()
+    assert "ae_loaded" in health
+    assert "ae_error" in health or health["ae_loaded"] is True
+    if health["ae_loaded"]:
+        assert health.get("ae_error") in (None, "")
+    else:
+        assert health.get("ae_error")
+        assert health["ae_error"] != "0.0"
+    assert health.get("graph_available") is True
+
+
 def test_health_reports_open_sandbox(monkeypatch) -> None:
     monkeypatch.setenv("SENTINALPAY_REQUIRE_LOGIN", "0")
     client = TestClient(app)

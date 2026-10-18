@@ -33,10 +33,28 @@ def test_score_response_shape() -> None:
     assert 0.0 <= body["risk_score"] <= 1.0
     assert 0 <= body["canonical_risk_score"] <= 100
     assert abs(body["risk_score"] - body["canonical_risk_score"] / 100.0) < 1e-9
-    assert body["P_ae"] is None
-    assert body["P_graph"] is None
-    assert body["structuring_flag"] is None
-    assert body["ae_available"] is False
+    if body["ae_available"]:
+        assert body["P_ae"] is not None
+        assert 0.0 <= body["P_ae"] <= 1.0
+    else:
+        assert body["P_ae"] is None
+    if body["graph_available"]:
+        assert body["P_graph"] is not None
+        assert 0.0 <= body["P_graph"] <= 1.0
+    else:
+        assert body["P_graph"] is None
+
+
+def test_score_graph_available_on_api() -> None:
+    client = TestClient(app)
+    posted = _score(client, transaction_id="lab-graph-1", user_id="USR_GRAPH_API")
+    assert posted.status_code == 200
+    body = posted.json()
+    assert body["graph_available"] is True
+    assert body["P_graph"] is not None
+    assert 0.0 <= body["P_graph"] <= 1.0
+    if not body["ae_available"]:
+        assert body["P_ae"] is None
 
 
 def test_grocery_unknown_location_baseline() -> None:
@@ -80,8 +98,10 @@ def test_score_without_location_does_not_invent_coords() -> None:
     body = posted.json()
     assert body["transaction_id"] == "lab-noloc-1"
     assert body["canonical_decision"] in {"ALLOW", "REVIEW", "BLOCK"}
-    assert body["P_ae"] is None
-    assert body["ae_available"] is False
+    if body["ae_available"]:
+        assert 0.0 <= body["P_ae"] <= 1.0
+    else:
+        assert body["P_ae"] is None
     feed = client.get("/transactions")
     row = next(item for item in feed.json()["items"] if item["payment"]["id"] == "lab-noloc-1")
     assert row["payment"]["location"]["status"] == "omitted"

@@ -246,10 +246,11 @@ def score_transaction(
         from detection.graph_features import score_graph
 
         p_ae = score_autoencoder(vector)
-        p_graph = score_graph(graph, txn.user_id) if graph is not None else 0.0
-        xgb = 0.0 if p_xgb is None else max(0.0, min(1.0, float(p_xgb)))
-        # Placeholder weights pending Bayesian optimisation on a validation set.
-        p_hybrid = _clip01(0.5 * xgb + 0.3 * p_ae + 0.2 * p_graph)
+        p_graph = None if graph is None else score_graph(graph, txn.user_id)
+        # Uncalibrated desk blend. Omit rather than substitute 0.0 for a down detector.
+        if p_ae is not None and p_graph is not None:
+            xgb = 0.0 if p_xgb is None else max(0.0, min(1.0, float(p_xgb)))
+            p_hybrid = _clip01(0.5 * xgb + 0.3 * p_ae + 0.2 * p_graph)
     assessment = RiskAssessment(
         transaction_id=txn.transaction_id,
         score=score,

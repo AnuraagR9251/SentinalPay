@@ -101,6 +101,18 @@ def _contribution(assessment, name: str):
 # ---------------------------------------------------------------------------
 
 
+def test_hybrid_omits_blend_when_ae_missing(monkeypatch) -> None:
+    from detection.graph_features import add_transaction, empty_graph
+
+    monkeypatch.setattr("detection.autoencoder_scorer.score_autoencoder", lambda _vector: None)
+    graph = empty_graph()
+    add_transaction(graph, _txn(transaction_id="g1", payee_vpa=HOME_PAYEE))
+    assessment = score_transaction(_txn(), _history(), _profile(), graph=graph, include_hybrid=True)
+    assert assessment.p_ae is None
+    assert assessment.p_hybrid is None
+    assert assessment.tier is RiskTier.ALLOW
+
+
 def test_four_risk_actions() -> None:
     from detection.scoring_engine import _tier_for
 

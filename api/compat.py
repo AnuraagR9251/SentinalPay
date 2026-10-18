@@ -71,6 +71,16 @@ def legacy_fields_from_canonical(result: Mapping[str, Any]) -> dict[str, Any]:
             {"name": item.get("factor") or "factor", "value": 1.0 if item.get("impact") == "HIGH" else 0.5}
             for item in result.get("risk_factors") or []
         ]
+    exp = result.get("experimental") if isinstance(result.get("experimental"), dict) else {}
+    ae_available = bool(exp.get("ae_available"))
+    graph_available = bool(exp.get("graph_available"))
+    p_ae = exp.get("P_ae") if ae_available else None
+    p_graph = exp.get("P_graph") if graph_available else None
+    if p_ae is not None:
+        p_ae = float(p_ae)
+    if p_graph is not None:
+        p_graph = float(p_graph)
+    structuring = exp.get("structuring_flag")
     return {
         "transaction_id": result["transaction_id"],
         "risk_score": score_100 / 100.0,
@@ -79,13 +89,13 @@ def legacy_fields_from_canonical(result: Mapping[str, Any]) -> dict[str, Any]:
         "canonical_risk_score": score_100,
         "action": action,
         "P_xgb": p_ml,
-        "P_ae": None,
-        "P_graph": None,
+        "P_ae": p_ae,
+        "P_graph": p_graph,
         "P_hybrid": score_100 / 100.0,
-        "structuring_flag": None,
-        "ae_available": False,
-        "graph_available": False,
-        "structuring_available": False,
+        "structuring_flag": None if structuring is None else bool(structuring),
+        "ae_available": ae_available,
+        "graph_available": graph_available,
+        "structuring_available": graph_available,
         "ml_available": ml_available,
         "top_contributing_features": hits[:5],
         "contributions": hits,

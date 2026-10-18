@@ -2,6 +2,10 @@
 
 `score_graph` is read-only. `add_transaction` is the only mutator. Caller
 objects are never modified.
+
+Live scoring builds a bounded window from `RiskStore.windowed_transactions`
+(default 24h, capped at 2000 rows). That graph is discarded after the
+request — it is not durable history. Duplicate `transaction_id`s are ignored.
 """
 
 from __future__ import annotations
@@ -9,7 +13,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timedelta, timezone
 from math import isfinite
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import networkx as nx
 
@@ -25,7 +29,9 @@ class GraphValidationError(ValueError):
 
 
 def empty_graph() -> nx.MultiDiGraph:
-    return nx.MultiDiGraph()
+    graph = nx.MultiDiGraph()
+    graph.graph["txn_ids"] = set()
+    return graph
 
 
 def _require_account(value: Any, field_name: str) -> str:
@@ -62,14 +68,18 @@ def _require_timestamp(value: Any) -> datetime:
 
 
 def add_transaction(graph: nx.MultiDiGraph, txn: Mapping[str, Any]) -> None:
-    """Add one directed edge. Does not mutate `txn`."""
+    """Add one directed edge. Duplicate transaction_id is ignored. Does not mutate `txn`."""
     if not isinstance(txn, Mapping):
         raise GraphValidationError("transaction must be a mapping")
     sender = _require_account(txn.get("user_id") or txn.get("sender") or txn.get("payer_vpa"), "user_id")
-    receiver = _require_account(txn.get("payee_vpa") or txn.get("receiver"), "payee_vpa")
+    receiver = _require_account(txn.get("payee_vpa") or txn.get("receiver") or txn.get("merchant_id"), "payee_vpa")
     amount = _require_amount(txn.get("amount"))
     timestamp = _require_timestamp(txn.get("timestamp"))
-    txn_id = str(txn.get("transaction_id") or "").strip() or f"{sender}->{receiver}"
+    txn_id = str(txn.get("transaction_id") or "").strip() or f"{sender}->{receiver}@{timestamp.isoformat()}"
+    seen: set[str] = graph.graph.setdefault("txn_ids", set())
+    if txn_id in seen:
+        return
+    seen.add(txn_id)
     graph.add_edge(
         sender,
         receiver,
@@ -77,6 +87,49 @@ def add_transaction(graph: nx.MultiDiGraph, txn: Mapping[str, Any]) -> None:
         timestamp=timestamp,
         transaction_id=txn_id,
     )
+
+
+def graph_from_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    as_of: datetime,
+    window_s: float | None = None,
+    skip_ids: set[str] | None = None,
+) -> nx.MultiDiGraph:
+    """Bounded window graph from persisted rows. Candidate id should be in skip_ids."""
+    as_of = _require_timestamp(as_of)
+    window = WINDOW_SECONDS if window_s is None else float(window_s)
+    start = as_of - timedelta(seconds=window)
+    skip = skip_ids or set()
+    graph = empty_graph()
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        tid = str(row.get("transaction_id") or "").strip()
+        if tid and tid in skip:
+            continue
+        ts_raw = row.get("timestamp")
+        try:
+            ts = _require_timestamp(ts_raw)
+        except GraphValidationError:
+            continue
+        if ts < start or ts > as_of:
+            continue
+        try:
+            add_transaction(graph, row)
+        except GraphValidationError:
+            continue
+    return graph
+
+
+def _window_subgraph(graph: nx.MultiDiGraph, end: datetime) -> nx.MultiDiGraph:
+    start = end - timedelta(seconds=WINDOW_SECONDS)
+    sub = empty_graph()
+    for src, dest, data in graph.edges(data=True):
+        ts = data.get("timestamp")
+        if isinstance(ts, datetime) and start <= ts <= end:
+            sub.add_edge(src, dest, **data)
+    return sub
 
 
 def _window_out_edges(graph: nx.MultiDiGraph, account_id: str, end: datetime) -> list[tuple[str, str, dict[str, Any]]]:
@@ -104,23 +157,19 @@ def _window_in_edges(graph: nx.MultiDiGraph, account_id: str, end: datetime) -> 
 
 
 def _as_of(graph: nx.MultiDiGraph, account_id: str) -> datetime:
+    """Latest edge time in the graph. Window end is graph-now, not the account's last hop."""
     stamps: list[datetime] = []
-    if account_id in graph:
-        for _, _, data in graph.out_edges(account_id, data=True):
-            ts = data.get("timestamp")
-            if isinstance(ts, datetime):
-                stamps.append(ts)
-        for _, _, data in graph.in_edges(account_id, data=True):
-            ts = data.get("timestamp")
-            if isinstance(ts, datetime):
-                stamps.append(ts)
+    for _, _, data in graph.edges(data=True):
+        ts = data.get("timestamp")
+        if isinstance(ts, datetime):
+            stamps.append(ts)
     return max(stamps) if stamps else datetime.now(timezone.utc)
 
 
-def graph_signals(graph: nx.MultiDiGraph, account_id: str) -> dict[str, Any]:
+def graph_signals(graph: nx.MultiDiGraph, account_id: str, as_of: datetime | None = None) -> dict[str, Any]:
     """Rolling-window features for one account. Read-only."""
     account_id = _require_account(account_id, "account_id")
-    end = _as_of(graph, account_id)
+    end = _require_timestamp(as_of) if as_of is not None else _as_of(graph, account_id)
     outgoing = _window_out_edges(graph, account_id, end)
     incoming = _window_in_edges(graph, account_id, end)
 
@@ -145,9 +194,10 @@ def graph_signals(graph: nx.MultiDiGraph, account_id: str) -> dict[str, Any]:
     structuring_flag = len(small) >= 3 and sum(small) > STRUCTURING_AMOUNT
 
     mule_cluster = False
-    cluster_size = 1 if account_id in graph else 0
-    if account_id in graph and graph.number_of_nodes() > 0:
-        for component in nx.weakly_connected_components(graph):
+    windowed = _window_subgraph(graph, end)
+    cluster_size = 1 if account_id in windowed else 0
+    if account_id in windowed and windowed.number_of_nodes() > 0:
+        for component in nx.weakly_connected_components(windowed):
             if account_id in component:
                 cluster_size = len(component)
                 mule_cluster = cluster_size >= MULE_CLUSTER_MIN
@@ -165,14 +215,13 @@ def graph_signals(graph: nx.MultiDiGraph, account_id: str) -> dict[str, Any]:
     }
 
 
-def score_graph(graph: nx.MultiDiGraph, account_id: str) -> float:
-    """Combine graph signals into a 0–1 risk score. Does not mutate `graph` inputs.
+def score_graph(graph: nx.MultiDiGraph, account_id: str, as_of: datetime | None = None) -> float:
+    """Combine graph signals into a 0–1 heuristic. Does not mutate `graph`.
 
-    Weighting: structuring 0.40 and mule-cluster 0.35 — those are the
-    strongest cash-out / smurfing cues. Fan-out 0.15 and fan-in 0.10 are
-    supporting (a busy merchant can have high degree without fraud).
+    Demo weights, not a calibrated detector: structuring 0.40, mule 0.35,
+    fan-out 0.15, fan-in 0.10. Not blended into ALLOW/REVIEW/BLOCK.
     """
-    signals = graph_signals(graph, account_id)
+    signals = graph_signals(graph, account_id, as_of=as_of)
     fan_out = min(1.0, float(signals["fan_out_count"]) / 8.0)
     fan_in = min(1.0, float(signals["fan_in_count"]) / 8.0)
     structuring = 1.0 if signals["structuring_flag"] else 0.0
@@ -187,6 +236,7 @@ __all__ = [
     "WINDOW_SECONDS",
     "add_transaction",
     "empty_graph",
+    "graph_from_rows",
     "graph_signals",
     "score_graph",
 ]

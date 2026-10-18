@@ -169,8 +169,11 @@ def test_graphql_score_allows_missing_location() -> None:
     body = posted.json()["data"]["scoreTransaction"]
     assert body["transactionId"] == "gql-noloc-1"
     assert body["canonicalDecision"] in {"ALLOW", "REVIEW", "BLOCK"}
-    assert body["pAe"] is None
-    assert body["aeAvailable"] is False
+    if body["aeAvailable"]:
+        assert body["pAe"] is not None
+        assert 0.0 <= body["pAe"] <= 1.0
+    else:
+        assert body["pAe"] is None
 
 
 def test_graphql_open_demo_allows_both_mutations() -> None:

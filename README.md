@@ -10,7 +10,7 @@ UPI fraud-risk API for CSE7102. One engine (`risk.pipeline.evaluate_transaction`
 | `POST /api/v1/transactions/evaluate` | Canonical 0–100 + ALLOW / REVIEW / BLOCK | **Implemented** |
 | `POST /login` | Demo password session | **Implemented** |
 | `POST /pin/verify` | Demo UPI PIN or bound STEP_UP challenge | **Implemented** (sandbox, not bank OTP) |
-| `GET /health` | `{status, model_loaded, model_version, ml_fallback}` | **Implemented** |
+| `GET /health` | `{status, model_loaded, model_version, ml_fallback, ae_loaded, ae_error}` | **Implemented** |
 | `GET /ready` | Store reachable; missing model still ready | **Implemented** |
 | `GET /transactions` | Nested sandbox feed: `payment` / `canonical` / `policy` / `models` | **Implemented** |
 | `POST /graphql` | Same engine as REST (`scoreTransaction`, `evaluateTransaction`, `login`) | **Implemented** |
@@ -24,7 +24,7 @@ UPI fraud-risk API for CSE7102. One engine (`risk.pipeline.evaluate_transaction`
 | SQLite (default) | **Implemented** |
 | Honest XGBoost `xgb_v3` | **Experimental** — synthetic PaySim eval, chrono 60/20/20, vs rules+LR |
 | Missing-model fallback | **Implemented** — prior 0.5, ALLOW demoted to REVIEW |
-| AE / graph on `/score` | **Unavailable** (`P_ae` / `P_graph` are `null`, not 0) |
+| AE / graph on `/score` | **Experimental signals** — not blended into ALLOW / REVIEW / BLOCK. Missing AE is `null`, not 0 |
 | Demo lab in the React app | **Implemented** |
 | Login / PIN / STEP_UP policy | **Implemented** (local demo hashes + bound sandbox challenge) |
 | ATO heuristic | **Implemented** — `ATO_SUSPECTED` only with two corroborating rules; not a trained model |
@@ -44,6 +44,7 @@ POST /graphql  (scoreTransaction)  or  REST /score /evaluate
 risk.pipeline.evaluate_transaction()
     ↓
 Security → Rules (+ ATO heuristic) → Behavior → XGBoost (xgb_v3)
+    + experimental AE / graph (reported, not blended)
     ↓
 ALLOW / REVIEW / BLOCK
     ↓
@@ -70,7 +71,7 @@ Utility bills stay unpaid until sandbox payment completion (ALLOW, or STEP_UP af
 
 Razorpay TEST webhooks verify the raw body HMAC and dedupe on `X-Razorpay-Event-Id` (payload `id` if the header is absent). Duplicate or older events do not rewind payment state.
 
-`P_ae`, `P_graph`, and `structuring_flag` on `/score` are unused live components (`null` + `ae_available: false`). They are not AE/graph inference.
+`P_ae` and `P_graph` on `/score` are experimental. They do not change ALLOW / REVIEW / BLOCK. Missing autoencoder → `P_ae: null` and `ae_available: false` (never a silent 0.0). Graph scores a 24h window from SQLite (capped 2000 rows), built per request, not an in-memory durable graph. `P_hybrid` on `/score` remains the canonical 0–100 score mapped to 0–1.
 
 Demo lab GPS is per profile (Bengaluru / Delhi), labeled simulated — not device coordinates.
 
@@ -110,7 +111,7 @@ Retrain the model after changing features **only if the PaySim CSV is already on
 py -3 ml/train_xgboost.py
 ```
 
-The repo tracks a small `ml/models/xgboost_model.pkl` (PaySim **xgb_v3**) so a clean checkout can load the model. `GET /health` must show `model_loaded: true` on the machine you present from. PaySim CSV and other `*.pkl` files stay gitignored. Retrain only if that CSV is already local.
+The repo tracks a small `ml/models/xgboost_model.pkl` (PaySim **xgb_v3**) so a clean checkout can load the model. `GET /health` must show `model_loaded: true` on the machine you present from. The autoencoder `.keras` is optional and may be present locally; if it is missing, `/health` reports `ae_loaded: false`. PaySim CSV and other `*.pkl` files stay gitignored. Retrain only if that CSV is already local.
 
 ## Tests
 

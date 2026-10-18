@@ -8,8 +8,10 @@ import pytest
 
 from detection.graph_features import (
     GraphValidationError,
+    WINDOW_SECONDS,
     add_transaction,
     empty_graph,
+    graph_from_rows,
     graph_signals,
     score_graph,
 )
@@ -75,3 +77,80 @@ def test_rejects_bad_amount() -> None:
     graph = empty_graph()
     with pytest.raises(GraphValidationError):
         add_transaction(graph, _txn(sender="a@oksbi", payee="b@oksbi", amount=-1.0))
+
+
+def test_fan_out_raises_score() -> None:
+    graph = empty_graph()
+    sender = "busy@oksbi"
+    for i in range(8):
+        add_transaction(
+            graph,
+            _txn(sender=sender, payee=f"payee{i}@oksbi", amount=200.0, minutes=i, txn_id=f"fo{i}"),
+        )
+    signals = graph_signals(graph, sender, as_of=NOW + timedelta(hours=1))
+    assert signals["fan_out_count"] == 8
+    assert score_graph(graph, sender, as_of=NOW + timedelta(hours=1)) >= 0.15
+
+
+def test_fan_in_raises_score() -> None:
+    graph = empty_graph()
+    payee = "hub@oksbi"
+    for i in range(8):
+        add_transaction(
+            graph,
+            _txn(sender=f"src{i}@oksbi", payee=payee, amount=200.0, minutes=i, txn_id=f"fi{i}"),
+        )
+    signals = graph_signals(graph, payee, as_of=NOW + timedelta(hours=1))
+    assert signals["fan_in_count"] == 8
+    assert score_graph(graph, payee, as_of=NOW + timedelta(hours=1)) >= 0.10
+
+
+def test_old_edges_excluded_from_mule_cluster() -> None:
+    graph = empty_graph()
+    chain = [f"old{i}@oksbi" for i in range(6)]
+    stale = NOW - timedelta(seconds=WINDOW_SECONDS + 3600)
+    for i in range(len(chain) - 1):
+        add_transaction(
+            graph,
+            {
+                "transaction_id": f"old{i}",
+                "user_id": chain[i],
+                "payee_vpa": chain[i + 1],
+                "amount": 8000.0,
+                "timestamp": stale,
+            },
+        )
+    signals = graph_signals(graph, chain[0], as_of=NOW)
+    assert signals["mule_cluster"] is False
+    assert signals["cluster_size"] in {0, 1}
+
+
+def test_duplicate_transaction_id_ignored() -> None:
+    graph = empty_graph()
+    first = _txn(sender="a@oksbi", payee="b@oksbi", amount=100.0, txn_id="dup-1")
+    add_transaction(graph, first)
+    add_transaction(graph, _txn(sender="a@oksbi", payee="c@oksbi", amount=999.0, minutes=1, txn_id="dup-1"))
+    assert graph.number_of_edges() == 1
+    signals = graph_signals(graph, "a@oksbi", as_of=NOW + timedelta(hours=1))
+    assert signals["fan_out_count"] == 1
+
+
+def test_missing_history_score_is_zero() -> None:
+    graph = empty_graph()
+    assert score_graph(graph, "ghost@oksbi", as_of=NOW) == 0.0
+    signals = graph_signals(graph, "ghost@oksbi", as_of=NOW)
+    assert signals["structuring_flag"] is False
+    assert signals["mule_cluster"] is False
+
+
+def test_graph_from_rows_skips_candidate_and_future() -> None:
+    rows = [
+        _txn(sender="a@oksbi", payee="b@oksbi", amount=100.0, minutes=-10, txn_id="keep"),
+        _txn(sender="a@oksbi", payee="c@oksbi", amount=100.0, minutes=0, txn_id="candidate"),
+        _txn(sender="a@oksbi", payee="d@oksbi", amount=100.0, minutes=30, txn_id="future"),
+    ]
+    graph = graph_from_rows(rows, as_of=NOW, skip_ids={"candidate"})
+    add_transaction(graph, rows[1])
+    signals = graph_signals(graph, "a@oksbi", as_of=NOW)
+    assert signals["fan_out_count"] == 2
+    assert graph.number_of_edges() == 2

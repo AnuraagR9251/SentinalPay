@@ -40,6 +40,8 @@ class HealthPayload:
     model_loaded: bool
     model_version: Optional[str] = None
     ml_fallback: Optional[str] = None
+    ae_loaded: bool = False
+    ae_error: Optional[str] = None
 
 
 @strawberry.type
@@ -198,11 +200,19 @@ class Query:
     @strawberry.field
     def health(self) -> HealthPayload:
         status = model_status()
+        try:
+            from detection.autoencoder_scorer import ae_status
+
+            ae = ae_status()
+        except Exception:
+            ae = {"ae_loaded": False, "ae_error": "status_error"}
         return HealthPayload(
             status="ok",
             model_loaded=status["model_loaded"],
             model_version=status["model_version"],
             ml_fallback=status["ml_fallback"],
+            ae_loaded=bool(ae.get("ae_loaded")),
+            ae_error=ae.get("ae_error"),
         )
 
     @strawberry.field

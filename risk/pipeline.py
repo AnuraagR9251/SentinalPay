@@ -2,10 +2,22 @@
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Any, Mapping, Sequence
 
+from detection.autoencoder_scorer import infer_autoencoder
 from detection.features.location import haversine_km
+from detection.graph_features import (
+    GraphValidationError,
+    WINDOW_SECONDS,
+    add_transaction,
+    graph_from_rows,
+    graph_signals,
+    score_graph,
+)
+from detection.scoring_engine import extract_feature_vector
+from detection.validation import ScoringValidationError
 from risk.aggregate import aggregate_and_decide
 from risk.ato import merge_ato
 from risk.behavior import analyze_behavior
@@ -96,6 +108,137 @@ def _location_baseline(txn: NormalizedTransaction, home: tuple[float, float] | N
     return "KNOWN_UNUSUAL_LOCATION"
 
 
+_EXPERIMENTAL_NOTE = "experimental; not blended into canonical ALLOW/REVIEW/BLOCK"
+
+
+def _ae_inputs(
+    txn: NormalizedTransaction,
+    history: Sequence[dict],
+    home: tuple[float, float] | None,
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    current = {
+        "transaction_id": txn.transaction_id,
+        "user_id": txn.user_id,
+        "amount": txn.amount,
+        "payee_vpa": txn.merchant_id,
+        "timestamp": txn.timestamp,
+        "lat": txn.latitude,
+        "lon": txn.longitude,
+        "ip_address": txn.ip_address,
+        "device_id": txn.device_id,
+        "purpose": txn.merchant_category,
+    }
+    prior: list[dict[str, Any]] = []
+    known: set[str] = set()
+    for row in history:
+        payee = str(row.get("merchant_id") or "").strip()
+        if not payee or row.get("amount") is None or not row.get("timestamp"):
+            continue
+        known.add(payee)
+        prior.append(
+            {
+                "transaction_id": str(row.get("transaction_id") or "hist"),
+                "user_id": txn.user_id,
+                "amount": row.get("amount"),
+                "payee_vpa": payee,
+                "timestamp": row.get("timestamp"),
+                "lat": row.get("latitude"),
+                "lon": row.get("longitude"),
+                "ip_address": row.get("ip_address"),
+                "device_id": row.get("device_id"),
+            }
+        )
+    profile = {
+        "user_id": txn.user_id,
+        "home_lat": None if home is None else home[0],
+        "home_lon": None if home is None else home[1],
+        "known_payees": known,
+    }
+    return current, prior, profile
+
+
+def _experimental_signals(
+    txn: NormalizedTransaction,
+    history: Sequence[dict],
+    home: tuple[float, float] | None,
+    db: RiskStore,
+) -> dict[str, Any]:
+    """AE + graph extras. Failures stay null; they never become 0.0."""
+    ae_available = False
+    ae_error: str | None = "unavailable"
+    p_ae: float | None = None
+    try:
+        current, prior, profile = _ae_inputs(txn, history, home)
+        vector = extract_feature_vector(current, prior, profile)
+        ae = infer_autoencoder(vector)
+        ae_available = bool(ae.available)
+        ae_error = ae.error
+        p_ae = None if not ae.available else ae.score
+    except (ScoringValidationError, TypeError, ValueError):
+        ae_available = False
+        ae_error = "feature_error"
+        p_ae = None
+
+    graph_available = False
+    graph_error: str | None = "unavailable"
+    p_graph: float | None = None
+    structuring: bool | None = None
+    extra: dict[str, Any] = {}
+    try:
+        rows = db.windowed_transactions(txn.timestamp, WINDOW_SECONDS)
+        graph = graph_from_rows(
+            rows,
+            as_of=txn.timestamp,
+            window_s=WINDOW_SECONDS,
+            skip_ids={txn.transaction_id},
+        )
+        try:
+            add_transaction(
+                graph,
+                {
+                    "transaction_id": txn.transaction_id,
+                    "user_id": txn.user_id,
+                    "payee_vpa": txn.merchant_id,
+                    "amount": txn.amount,
+                    "timestamp": txn.timestamp,
+                },
+            )
+        except GraphValidationError:
+            pass
+        signals = graph_signals(graph, txn.user_id, as_of=txn.timestamp)
+        raw = float(score_graph(graph, txn.user_id, as_of=txn.timestamp))
+        if not math.isfinite(raw):
+            raise ValueError("non_finite")
+        p_graph = min(1.0, max(0.0, raw))
+        graph_available = True
+        graph_error = None
+        structuring = bool(signals["structuring_flag"])
+        extra = {
+            "mule_cluster": bool(signals["mule_cluster"]),
+            "fan_in_count": int(signals["fan_in_count"]),
+            "fan_out_count": int(signals["fan_out_count"]),
+            "cluster_size": int(signals["cluster_size"]),
+        }
+    except Exception:
+        graph_available = False
+        graph_error = "unavailable"
+        p_graph = None
+        structuring = None
+        extra = {}
+
+    return {
+        "ae_available": ae_available,
+        "ae_error": ae_error,
+        "P_ae": p_ae,
+        "graph_available": graph_available,
+        "graph_error": graph_error,
+        "P_graph": p_graph,
+        "structuring_flag": structuring,
+        "note": _EXPERIMENTAL_NOTE,
+        **extra,
+    }
+
+
 def _result_payload(
     *,
     txn_id: str,
@@ -108,6 +251,7 @@ def _result_payload(
     location_baseline: str,
     engine_version: str,
     elapsed_ms: float,
+    experimental: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = {
         "transaction_id": txn_id,
@@ -151,6 +295,14 @@ def _result_payload(
         "policy": dict(decision.policy),
         "risk_factors": [{"factor": f.factor, "impact": f.impact} for f in decision.risk_factors],
         "components": {k: round(v, 2) for k, v in decision.components.items()},
+        "experimental": experimental or {
+            "ae_available": False,
+            "P_ae": None,
+            "graph_available": False,
+            "P_graph": None,
+            "structuring_flag": None,
+            "note": _EXPERIMENTAL_NOTE,
+        },
     }
     return attach_public_envelope(payload)
 
@@ -183,6 +335,7 @@ def evaluate_transaction(
     behavior = analyze_behavior(txn, history)
     ml = infer_fraud(txn, history, home)
     decision = aggregate_and_decide(security, rules, behavior, ml, cfg)
+    experimental = _experimental_signals(txn, history, home, db)
     elapsed_ms = (time.perf_counter() - started) * 1000.0
     result = _result_payload(
         txn_id=txn.transaction_id,
@@ -195,6 +348,7 @@ def evaluate_transaction(
         location_baseline=location_baseline,
         engine_version=cfg.engine_version,
         elapsed_ms=elapsed_ms,
+        experimental=experimental,
     )
     result["action"] = policy_action(result)
     try:

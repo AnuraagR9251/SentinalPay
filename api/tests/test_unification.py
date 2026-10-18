@@ -51,6 +51,33 @@ def test_legacy_unknown_ml_does_not_claim_available() -> None:
     assert live["ml_available"] is True
     assert live["P_xgb"] == 0.81
 
+    ae_down = legacy_fields_from_canonical(
+        {
+            "transaction_id": "tx-ae-down",
+            "decision": "ALLOW",
+            "risk_score": 12,
+            "ml": {"available": True, "fraud_probability": 0.1},
+            "experimental": {"ae_available": False, "P_ae": None, "ae_error": "missing_file"},
+        }
+    )
+    assert ae_down["ae_available"] is False
+    assert ae_down["P_ae"] is None
+
+    ae_live = legacy_fields_from_canonical(
+        {
+            "transaction_id": "tx-ae-live",
+            "decision": "ALLOW",
+            "risk_score": 12,
+            "ml": {"available": True, "fraud_probability": 0.1},
+            "experimental": {"ae_available": True, "P_ae": 0.42, "graph_available": True, "P_graph": 0.2, "structuring_flag": False},
+        }
+    )
+    assert ae_live["ae_available"] is True
+    assert ae_live["P_ae"] == 0.42
+    assert ae_live["graph_available"] is True
+    assert ae_live["P_graph"] == 0.2
+    assert ae_live["canonical_risk_score"] == 12
+
 
 def test_score_and_evaluate_share_pipeline() -> None:
     client = TestClient(app)
@@ -84,11 +111,17 @@ def test_score_and_evaluate_share_pipeline() -> None:
     )
     assert scored.status_code == 200
     legacy = scored.json()
-    assert legacy["ae_available"] is False
-    assert legacy["graph_available"] is False
-    assert legacy["P_ae"] is None
-    assert legacy["P_graph"] is None
-    assert legacy["structuring_flag"] is None
+    if legacy["ae_available"]:
+        assert legacy["P_ae"] is not None
+        assert 0.0 <= legacy["P_ae"] <= 1.0
+    else:
+        assert legacy["P_ae"] is None
+    if legacy["graph_available"]:
+        assert legacy["P_graph"] is not None
+        assert 0.0 <= legacy["P_graph"] <= 1.0
+        assert legacy["structuring_flag"] in {True, False}
+    else:
+        assert legacy["P_graph"] is None
     assert legacy["ml_available"] == canonical["ml"]["available"]
     if canonical["ml"]["available"] is True:
         assert legacy["P_xgb"] == canonical["ml"]["fraud_probability"]

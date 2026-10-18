@@ -208,6 +208,11 @@ class HealthResponse(BaseModel):
     load_error: str | None = None
     open_sandbox: bool = False
     auth_warning: str | None = None
+    ae_loaded: bool = False
+    ae_error: str | None = None
+    ae_note: str | None = None
+    graph_available: bool = True
+    graph_note: str | None = None
 
 
 class LoginRequest(BaseModel):
@@ -268,6 +273,13 @@ def _feed_item(row: dict[str, Any]) -> FeedCase:
     ml_available = fields.get("ml_available")
     hits = [FeatureHit(**hit) for hit in fields["contributions"]]
     xgb_error = ml.get("error") if ml else None
+    exp = result.get("experimental") if isinstance(result.get("experimental"), dict) else {}
+    ae_available = fields.get("ae_available")
+    graph_available = fields.get("graph_available")
+    ae_note = exp.get("ae_error") or exp.get("note")
+    if ae_available:
+        ae_note = exp.get("note")
+    graph_note = exp.get("note") if graph_available else (exp.get("graph_error") or "graph unavailable")
     if ml_available is True:
         xgb_note = None
         xgb_value = fields.get("P_xgb")
@@ -317,19 +329,19 @@ def _feed_item(row: dict[str, Any]) -> FeedCase:
                 note=xgb_note,
             ),
             autoencoder=FeedModelSignal(
-                available=False,
-                value=None,
-                note="component not wired",
+                available=bool(ae_available),
+                value=fields.get("P_ae"),
+                note=str(ae_note) if ae_note else None,
             ),
             graph=FeedModelSignal(
-                available=False,
-                value=None,
-                note="component not wired",
+                available=bool(graph_available),
+                value=fields.get("P_graph"),
+                note=str(graph_note) if graph_note else None,
             ),
             structuring=FeedModelSignal(
-                available=False,
-                value=None,
-                note="component not wired",
+                available=bool(graph_available),
+                value=fields.get("structuring_flag"),
+                note=str(graph_note) if graph_note else None,
             ),
         ),
         triggered_signals=hits,
@@ -367,8 +379,23 @@ def ready() -> dict[str, Any]:
     }
 
 
+def _ae_health() -> dict[str, Any]:
+    try:
+        from detection.autoencoder_scorer import ae_status
+
+        return ae_status()
+    except Exception:
+        return {
+            "ae_loaded": False,
+            "ae_error": "status_error",
+            "ae_note": "experimental; not blended into canonical ALLOW/REVIEW/BLOCK",
+        }
+
+
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
+    ae = _ae_health()
+    graph_note = "windowed store heuristic (24h, cap 2000); not blended into ALLOW/REVIEW/BLOCK"
     try:
         status = model_status()
     except Exception:
@@ -380,6 +407,11 @@ def health() -> HealthResponse:
             load_error="status_error",
             open_sandbox=not require_login(),
             auth_warning=open_access_warning(),
+            ae_loaded=bool(ae.get("ae_loaded")),
+            ae_error=ae.get("ae_error"),
+            ae_note=ae.get("ae_note"),
+            graph_available=True,
+            graph_note=graph_note,
         )
     return HealthResponse(
         status="ok",
@@ -389,6 +421,11 @@ def health() -> HealthResponse:
         load_error=status.get("load_error"),
         open_sandbox=not require_login(),
         auth_warning=open_access_warning(),
+        ae_loaded=bool(ae.get("ae_loaded")),
+        ae_error=ae.get("ae_error"),
+        ae_note=ae.get("ae_note"),
+        graph_available=True,
+        graph_note=graph_note,
     )
 
 

@@ -14,7 +14,7 @@ import os
 import sqlite3
 import threading
 from collections import defaultdict, deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -426,6 +426,29 @@ class RiskStore:
                 (transaction_id,),
             ).fetchone()
         return int(row["n"]) if row else 0
+
+    def windowed_transactions(
+        self, as_of: datetime, window_s: float, limit: int = 2000
+    ) -> list[dict[str, Any]]:
+        """Recent payments across users for the demo graph. Cap is a demo ceiling."""
+        if as_of.tzinfo is None:
+            as_of = as_of.replace(tzinfo=timezone.utc)
+        else:
+            as_of = as_of.astimezone(timezone.utc)
+        start = (as_of - timedelta(seconds=float(window_s))).isoformat()
+        end = as_of.isoformat()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT transaction_id, user_id, amount, merchant_id, timestamp, merchant_category
+                FROM transactions
+                WHERE timestamp >= ? AND timestamp <= ?
+                ORDER BY timestamp ASC
+                LIMIT ?
+                """,
+                (start, end, int(limit)),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def user_history(self, user_id: str, limit: int = 80) -> list[dict[str, Any]]:
         with self._connect() as conn:

@@ -41,10 +41,12 @@ datasets/
 models/
 ml/artifacts/
 
-# Small versioned demo booster only (PaySim xgb_v3). Parent dir must be un-ignored first.
+# Small versioned demo artifacts. Parent dir must be un-ignored first.
 !ml/models/
 !ml/models/xgboost_model.pkl
 !ml/models/xgboost_metrics.json
+!ml/models/autoencoder_model.keras
+!ml/models/autoencoder_threshold.json
 !ml/models/README.md
 
 # OS / editor

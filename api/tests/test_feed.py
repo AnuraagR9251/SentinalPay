@@ -50,9 +50,18 @@ def test_score_then_feed_roundtrip() -> None:
     assert case["canonical"]["scale"] == "0-100"
     assert case["policy"]["legacy_tier"] in {"ALLOW", "STEP_UP", "HOLD", "BLOCK"}
     assert 0.0 <= case["policy"]["legacy_score"] <= 1.0
-    assert case["models"]["autoencoder"]["available"] is False
-    assert case["models"]["autoencoder"]["value"] is None
-    assert case["models"]["graph"]["value"] is None
+    ae = case["models"]["autoencoder"]
+    graph = case["models"]["graph"]
+    if ae["available"]:
+        assert ae["value"] is not None
+        assert 0.0 <= float(ae["value"]) <= 1.0
+    else:
+        assert ae["value"] is None
+    if graph["available"]:
+        assert graph["value"] is not None
+        assert 0.0 <= float(graph["value"]) <= 1.0
+    else:
+        assert graph["value"] is None
     assert case["payment"]["location"]["status"] == "provided"
     xgb = case["models"]["xgboost"]
     assert xgb["available"] is posted.json()["ml_available"]
@@ -102,6 +111,33 @@ def _row(result: dict) -> dict:
         "longitude": 77.5946,
         "result_json": json.dumps(result),
     }
+
+
+def test_feed_item_experimental_ae_graph() -> None:
+    case = _feed_item(
+        _row(
+            {
+                "transaction_id": "tx-ae-yes",
+                "risk_score": 12,
+                "decision": "ALLOW",
+                "ml": {"available": True, "fraud_probability": 0.1, "model_version": "xgb_v3"},
+                "rules": {"triggered_rules": []},
+                "experimental": {
+                    "ae_available": True,
+                    "P_ae": 0.33,
+                    "graph_available": True,
+                    "P_graph": 0.12,
+                    "structuring_flag": False,
+                    "note": "experimental; not blended",
+                },
+            }
+        )
+    )
+    assert case.models.autoencoder.available is True
+    assert case.models.autoencoder.value == 0.33
+    assert case.models.graph.available is True
+    assert case.models.graph.value == 0.12
+    assert case.canonical.decision == "ALLOW"
 
 
 def test_feed_item_marks_genuine_model_available() -> None:
