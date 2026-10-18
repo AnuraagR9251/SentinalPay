@@ -1,8 +1,11 @@
 """Live feed: GET /transactions reads the canonical RiskStore."""
 
+import json
+from datetime import datetime, timezone
+
 from fastapi.testclient import TestClient
 
-from api.main import app
+from api.main import _feed_item, app
 
 
 def test_transactions_starts_empty() -> None:
@@ -51,6 +54,13 @@ def test_score_then_feed_roundtrip() -> None:
     assert case["models"]["autoencoder"]["value"] is None
     assert case["models"]["graph"]["value"] is None
     assert case["payment"]["location"]["status"] == "provided"
+    xgb = case["models"]["xgboost"]
+    assert xgb["available"] is posted.json()["ml_available"]
+    if xgb["available"] is True:
+        assert isinstance(xgb["value"], (int, float))
+    else:
+        assert xgb["value"] is None
+        assert xgb["available"] in (False, None)
 
 
 def test_evaluate_endpoint() -> None:
@@ -78,3 +88,94 @@ def test_evaluate_endpoint() -> None:
     assert "triggered_rules" in body["rules"]
     names = {item["rule"] for item in body["rules"]["triggered_rules"]}
     assert "HIGH_RISK_MERCHANT" not in names
+
+
+def _row(result: dict) -> dict:
+    return {
+        "transaction_id": result["transaction_id"],
+        "user_id": "aarav@senitenial",
+        "amount": 240.0,
+        "merchant_id": "priya.p@oksbi",
+        "merchant_category": "dining",
+        "timestamp": datetime(2026, 9, 28, 10, 0, tzinfo=timezone.utc),
+        "latitude": 12.9716,
+        "longitude": 77.5946,
+        "result_json": json.dumps(result),
+    }
+
+
+def test_feed_item_marks_genuine_model_available() -> None:
+    case = _feed_item(
+        _row(
+            {
+                "transaction_id": "tx-ml-yes",
+                "risk_score": 12,
+                "decision": "ALLOW",
+                "ml": {"available": True, "fraud_probability": 0.81, "model_version": "xgb_v3"},
+                "rules": {"triggered_rules": []},
+            }
+        )
+    )
+    xgb = case.models.xgboost
+    assert xgb.available is True
+    assert xgb.value == 0.81
+    assert xgb.note is None
+
+
+def test_feed_item_unavailable_model_hides_fallback_prior() -> None:
+    case = _feed_item(
+        _row(
+            {
+                "transaction_id": "tx-ml-no",
+                "risk_score": 20,
+                "decision": "REVIEW",
+                "ml": {
+                    "available": False,
+                    "fraud_probability": 0.5,
+                    "model_version": "unavailable",
+                    "error": "missing_file",
+                },
+                "rules": {"triggered_rules": []},
+            }
+        )
+    )
+    xgb = case.models.xgboost
+    assert xgb.available is False
+    assert xgb.value is None
+    assert "fallback prior" in (xgb.note or "")
+    assert case.canonical.decision == "REVIEW"
+
+
+def test_feed_item_unknown_availability_is_null() -> None:
+    case = _feed_item(
+        _row(
+            {
+                "transaction_id": "tx-ml-old",
+                "risk_score": 10,
+                "decision": "ALLOW",
+                "rules": {"triggered_rules": []},
+            }
+        )
+    )
+    xgb = case.models.xgboost
+    assert xgb.available is None
+    assert xgb.value is None
+    assert "unknown" in (xgb.note or "")
+
+
+def test_feed_item_missing_available_key_is_null() -> None:
+    case = _feed_item(
+        _row(
+            {
+                "transaction_id": "tx-ml-partial",
+                "risk_score": 10,
+                "decision": "ALLOW",
+                "ml": {"fraud_probability": 0.5, "model_version": "xgb_v3"},
+                "rules": {"triggered_rules": []},
+            }
+        )
+    )
+    xgb = case.models.xgboost
+    assert xgb.available is None
+    assert xgb.value is None
+    assert "unknown" in (xgb.note or "")

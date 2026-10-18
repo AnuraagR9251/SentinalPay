@@ -40,7 +40,7 @@ class ScorePayload:
     transaction_id: str
     risk_score: float
     risk_tier: str
-    p_xgb: float
+    p_xgb: Optional[float] = None
     p_ae: Optional[float] = None
     p_graph: Optional[float] = None
     p_hybrid: float

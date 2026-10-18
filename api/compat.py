@@ -48,7 +48,20 @@ def legacy_fields_from_canonical(result: Mapping[str, Any]) -> dict[str, Any]:
     else:
         tier = _CANONICAL_TO_LEGACY.get(decision, "HOLD")
     score_100 = int(result.get("risk_score") or 0)
-    p_ml = float((result.get("ml") or {}).get("fraud_probability") or result.get("fraud_probability") or 0.0)
+    ml = result.get("ml") if isinstance(result.get("ml"), dict) else None
+    if ml is None:
+        ml_available = None
+    elif "available" not in ml:
+        ml_available = None
+    else:
+        ml_available = bool(ml["available"])
+    if ml_available is True:
+        raw_p = ml.get("fraud_probability")
+        if raw_p is None:
+            raw_p = result.get("fraud_probability")
+        p_ml = None if raw_p is None else float(raw_p)
+    else:
+        p_ml = None
     hits = [
         {"name": item.get("rule") or item.get("factor") or "signal", "value": float(item.get("score") or 0) / 100.0}
         for item in (result.get("rules") or {}).get("triggered_rules") or []
@@ -73,9 +86,7 @@ def legacy_fields_from_canonical(result: Mapping[str, Any]) -> dict[str, Any]:
         "ae_available": False,
         "graph_available": False,
         "structuring_available": False,
-        "ml_available": bool((result.get("ml") or {}).get("available"))
-        if isinstance(result.get("ml"), dict)
-        else None,
+        "ml_available": ml_available,
         "top_contributing_features": hits[:5],
         "contributions": hits,
         "action_required": tier != "ALLOW",

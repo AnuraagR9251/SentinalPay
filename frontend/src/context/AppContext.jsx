@@ -18,49 +18,50 @@ import { loginViaGraphql, scoreViaGraphql, verifyPinViaGraphql } from '../api/gr
 const AppContext = createContext();
 
 const STORAGE_KEY = 'senitenial_pay_v1';
+const cloneSeed = (value) => JSON.parse(JSON.stringify(value));
 
 export const AppProvider = ({ children }) => {
   // Load initial state from LocalStorage if available
   const [user, setUser] = useState(() => {
     const saved = localStorage.getItem(`${STORAGE_KEY}_user`);
-    return saved ? JSON.parse(saved) : INITIAL_USER;
+    return saved ? JSON.parse(saved) : cloneSeed(INITIAL_USER);
   });
 
   const [banks, setBanks] = useState(() => {
     const saved = localStorage.getItem(`${STORAGE_KEY}_banks`);
-    return saved ? JSON.parse(saved) : INITIAL_BANKS;
+    return saved ? JSON.parse(saved) : cloneSeed(INITIAL_BANKS);
   });
 
   const [cards, setCards] = useState(() => {
     const saved = localStorage.getItem(`${STORAGE_KEY}_cards`);
-    return saved ? JSON.parse(saved) : INITIAL_CARDS;
+    return saved ? JSON.parse(saved) : cloneSeed(INITIAL_CARDS);
   });
 
   const [contacts, setContacts] = useState(() => {
     const saved = localStorage.getItem(`${STORAGE_KEY}_contacts`);
-    return saved ? JSON.parse(saved) : INITIAL_CONTACTS;
+    return saved ? JSON.parse(saved) : cloneSeed(INITIAL_CONTACTS);
   });
 
-  const [merchants] = useState(INITIAL_MERCHANTS);
+  const [merchants] = useState(() => cloneSeed(INITIAL_MERCHANTS));
 
   const [bills, setBills] = useState(() => {
     const saved = localStorage.getItem(`${STORAGE_KEY}_bills`);
-    return saved ? JSON.parse(saved) : INITIAL_BILLS;
+    return saved ? JSON.parse(saved) : cloneSeed(INITIAL_BILLS);
   });
 
   const [rewards, setRewards] = useState(() => {
     const saved = localStorage.getItem(`${STORAGE_KEY}_rewards`);
-    return saved ? JSON.parse(saved) : INITIAL_REWARDS;
+    return saved ? JSON.parse(saved) : cloneSeed(INITIAL_REWARDS);
   });
 
   const [transactions, setTransactions] = useState(() => {
     const saved = localStorage.getItem(`${STORAGE_KEY}_transactions`);
-    return saved ? JSON.parse(saved) : INITIAL_TRANSACTIONS;
+    return saved ? JSON.parse(saved) : cloneSeed(INITIAL_TRANSACTIONS);
   });
 
   const [splits, setSplits] = useState(() => {
     const saved = localStorage.getItem(`${STORAGE_KEY}_splits`);
-    return saved ? JSON.parse(saved) : INITIAL_SPLIT_GROUPS;
+    return saved ? JSON.parse(saved) : cloneSeed(INITIAL_SPLIT_GROUPS);
   });
 
   const [notifications, setNotifications] = useState([
@@ -594,14 +595,14 @@ export const AppProvider = ({ children }) => {
   // Reset demo data
   const resetToDemo = () => {
     localStorage.clear();
-    setUser(INITIAL_USER);
-    setBanks(INITIAL_BANKS);
-    setCards(INITIAL_CARDS);
-    setContacts(INITIAL_CONTACTS);
-    setBills(INITIAL_BILLS);
-    setRewards(INITIAL_REWARDS);
-    setTransactions(INITIAL_TRANSACTIONS);
-    setSplits(INITIAL_SPLIT_GROUPS);
+    setUser(cloneSeed(INITIAL_USER));
+    setBanks(cloneSeed(INITIAL_BANKS));
+    setCards(cloneSeed(INITIAL_CARDS));
+    setContacts(cloneSeed(INITIAL_CONTACTS));
+    setBills(cloneSeed(INITIAL_BILLS));
+    setRewards(cloneSeed(INITIAL_REWARDS));
+    setTransactions(cloneSeed(INITIAL_TRANSACTIONS));
+    setSplits(cloneSeed(INITIAL_SPLIT_GROUPS));
     sound.playSuccessChime();
   };
 

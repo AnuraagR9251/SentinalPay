@@ -34,6 +34,8 @@ htmlcov/
 *.h5
 *.keras
 data/
+!frontend/src/data/
+!frontend/src/data/**
 dataset/
 datasets/
 models/

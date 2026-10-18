@@ -425,14 +425,12 @@ def _render_desk() -> None:
                 f"Amount ₹{txn.amount:,.2f} · {txn.timestamp.strftime('%Y-%m-%d %H:%M:%S')} · "
                 f"purpose={txn.purpose or 'unknown'}"
             )
-            if assessment.ml_available is False:
-                xgb_txt = (
-                    f"{assessment.p_xgb:.3f} fallback prior"
-                    if assessment.p_xgb is not None
-                    else "unavailable"
-                )
-            else:
+            if assessment.ml_available is True:
                 xgb_txt = _opt_prob(assessment.p_xgb, True)
+            elif assessment.ml_available is False:
+                xgb_txt = "unavailable"
+            else:
+                xgb_txt = "unknown"
             st.caption(
                 f"P_xgb={xgb_txt} · "
                 f"P_ae={_opt_prob(assessment.p_ae, assessment.ae_available)} · "

@@ -2,8 +2,54 @@
 
 from fastapi.testclient import TestClient
 
+from api.compat import legacy_fields_from_canonical
 from api.main import app
 from risk.store import get_store
+
+
+def test_legacy_unknown_ml_does_not_claim_available() -> None:
+    missing = legacy_fields_from_canonical(
+        {
+            "transaction_id": "tx-old",
+            "decision": "ALLOW",
+            "risk_score": 10,
+        }
+    )
+    assert missing["ml_available"] is None
+    assert missing["P_xgb"] is None
+
+    partial = legacy_fields_from_canonical(
+        {
+            "transaction_id": "tx-partial",
+            "decision": "ALLOW",
+            "risk_score": 10,
+            "ml": {"fraud_probability": 0.5},
+        }
+    )
+    assert partial["ml_available"] is None
+    assert partial["P_xgb"] is None
+
+    down = legacy_fields_from_canonical(
+        {
+            "transaction_id": "tx-down",
+            "decision": "REVIEW",
+            "risk_score": 20,
+            "ml": {"available": False, "fraud_probability": 0.5, "error": "missing_file"},
+        }
+    )
+    assert down["ml_available"] is False
+    assert down["P_xgb"] is None
+
+    live = legacy_fields_from_canonical(
+        {
+            "transaction_id": "tx-live",
+            "decision": "ALLOW",
+            "risk_score": 12,
+            "ml": {"available": True, "fraud_probability": 0.81},
+        }
+    )
+    assert live["ml_available"] is True
+    assert live["P_xgb"] == 0.81
 
 
 def test_score_and_evaluate_share_pipeline() -> None:
@@ -43,6 +89,11 @@ def test_score_and_evaluate_share_pipeline() -> None:
     assert legacy["P_ae"] is None
     assert legacy["P_graph"] is None
     assert legacy["structuring_flag"] is None
+    assert legacy["ml_available"] == canonical["ml"]["available"]
+    if canonical["ml"]["available"] is True:
+        assert legacy["P_xgb"] == canonical["ml"]["fraud_probability"]
+    else:
+        assert legacy["P_xgb"] is None
     assert legacy["canonical_decision"] == canonical["decision"]
     assert legacy["canonical_risk_score"] == canonical["risk_score"]
     if canonical.get("action") == "STEP_UP":

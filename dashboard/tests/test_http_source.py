@@ -175,6 +175,65 @@ def test_http_source_empty_envelope_clears(monkeypatch) -> None:
     assert source.last_error is None
 
 
+def test_rows_from_feed_unavailable_and_unknown_model() -> None:
+    payload = {
+        "items": [
+            {
+                "payment": {
+                    "id": "tx-unavail",
+                    "user_id": "aarav@senitenial",
+                    "amount": 240.0,
+                    "payee_vpa": "priya.p@oksbi",
+                    "timestamp": "2026-09-28T10:00:00+00:00",
+                    "location": {"status": "omitted", "lat": None, "lon": None},
+                },
+                "canonical": {"decision": "REVIEW", "risk_score": 20},
+                "policy": {
+                    "action": "HOLD",
+                    "legacy_tier": "HOLD",
+                    "legacy_score": 0.2,
+                    "action_required": True,
+                },
+                "models": {
+                    "xgboost": {"available": False, "value": None, "note": "model unavailable"},
+                    "autoencoder": {"available": False, "value": None},
+                    "graph": {"available": False, "value": None},
+                },
+                "triggered_signals": [],
+            },
+            {
+                "payment": {
+                    "id": "tx-unknown",
+                    "user_id": "aarav@senitenial",
+                    "amount": 120.0,
+                    "payee_vpa": "priya.p@oksbi",
+                    "timestamp": "2026-09-28T09:00:00+00:00",
+                    "location": {"status": "omitted", "lat": None, "lon": None},
+                },
+                "canonical": {"decision": "ALLOW", "risk_score": 8},
+                "policy": {
+                    "action": "ALLOW",
+                    "legacy_tier": "ALLOW",
+                    "legacy_score": 0.08,
+                    "action_required": False,
+                },
+                "models": {
+                    "xgboost": {"available": None, "value": None, "note": "model availability unknown"},
+                    "autoencoder": {"available": False, "value": None},
+                    "graph": {"available": False, "value": None},
+                },
+                "triggered_signals": [],
+            },
+        ]
+    }
+    pairs = rows_from_feed(payload)
+    by_id = {txn.transaction_id: assessment for txn, assessment in pairs}
+    assert by_id["tx-unavail"].ml_available is False
+    assert by_id["tx-unavail"].p_xgb is None
+    assert by_id["tx-unknown"].ml_available is None
+    assert by_id["tx-unknown"].p_xgb is None
+
+
 def test_rows_from_feed_skips_missing_score() -> None:
     payload = {
         "items": [

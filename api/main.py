@@ -96,7 +96,7 @@ class ScoreResponse(BaseModel):
     transaction_id: str
     risk_score: float
     risk_tier: str
-    P_xgb: float
+    P_xgb: float | None = None
     P_ae: float | None = None
     P_graph: float | None = None
     P_hybrid: float
@@ -154,7 +154,9 @@ class FeedPolicy(BaseModel):
 
 
 class FeedModelSignal(BaseModel):
-    available: bool
+    """available is tri-state: true, false, or null if historical rows lack the field."""
+
+    available: bool | None = None
     value: float | bool | None = None
     note: str | None = None
 
@@ -236,9 +238,26 @@ def _feed_item(row: dict[str, Any]) -> FeedCase:
     lon = row.get("longitude")
     ml = result.get("ml") if isinstance(result.get("ml"), dict) else {}
     ml_available = fields.get("ml_available")
-    if ml_available is None:
-        ml_available = bool(ml.get("available")) if ml else None
     hits = [FeatureHit(**hit) for hit in fields["contributions"]]
+    xgb_error = ml.get("error") if ml else None
+    if ml_available is True:
+        xgb_note = None
+        xgb_value = fields.get("P_xgb")
+    elif ml_available is False:
+        xgb_value = None
+        if xgb_error == "missing_file":
+            xgb_note = "model file missing; fallback prior, not a live model score"
+        elif xgb_error in {"load_error", "error"}:
+            xgb_note = "model load failed; fallback prior, not a live model score"
+        elif xgb_error == "incompatible":
+            xgb_note = "incompatible model; fallback prior, not a live model score"
+        elif xgb_error == "inference_error":
+            xgb_note = "inference failed; fallback prior, not a live model score"
+        else:
+            xgb_note = "model unavailable; fallback prior, not a live model score"
+    else:
+        xgb_value = None
+        xgb_note = "model availability unknown"
     return FeedCase(
         payment=FeedPayment(
             id=fields["transaction_id"],
@@ -265,9 +284,9 @@ def _feed_item(row: dict[str, Any]) -> FeedCase:
         ),
         models=FeedModels(
             xgboost=FeedModelSignal(
-                available=ml_available is not False,
-                value=fields["P_xgb"],
-                note="fallback prior, not a live model score" if ml_available is False else None,
+                available=ml_available,
+                value=xgb_value,
+                note=xgb_note,
             ),
             autoencoder=FeedModelSignal(
                 available=False,
