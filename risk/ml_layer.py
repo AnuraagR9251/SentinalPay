@@ -16,6 +16,7 @@ from risk.contracts import MlResult, NormalizedTransaction
 REPO_ROOT = Path(__file__).resolve().parent.parent
 _MODEL: Any = None
 _MODEL_VERSION = "unavailable"
+_LOAD_ERROR: str | None = None
 # ponytail: 0.5 is a documented conservative prior (not "safe"). Upgrade: calibrated class prior from production traffic.
 MISSING_MODEL_PRIOR = 0.5
 _MISSING = object()
@@ -40,13 +41,21 @@ LIVE_FEATURE_NAMES: tuple[str, ...] = FEATURE_VECTOR_NAMES + (
 
 
 def reset_model() -> None:
-    global _MODEL, _MODEL_VERSION
+    global _MODEL, _MODEL_VERSION, _LOAD_ERROR
     _MODEL = None
     _MODEL_VERSION = "unavailable"
+    _LOAD_ERROR = None
+
+
+def _mark_missing(reason: str, version: str) -> None:
+    global _MODEL, _MODEL_VERSION, _LOAD_ERROR
+    _MODEL = _MISSING
+    _MODEL_VERSION = version
+    _LOAD_ERROR = reason
 
 
 def _load() -> Any:
-    global _MODEL, _MODEL_VERSION
+    global _MODEL, _MODEL_VERSION, _LOAD_ERROR
     if _MODEL is _MISSING:
         return None
     if _MODEL is not None:
@@ -60,15 +69,25 @@ def _load() -> Any:
     if not path.is_absolute():
         path = REPO_ROOT / path
     if not path.exists():
-        _MODEL = _MISSING
-        _MODEL_VERSION = "unavailable"
+        _mark_missing("missing_file", "unavailable")
         return None
-    loaded = joblib.load(path)
+    try:
+        loaded = joblib.load(path)
+    except Exception:
+        _mark_missing("load_error", "error")
+        return None
     if isinstance(loaded, dict) and "model" in loaded:
-        _MODEL = loaded["model"]
+        model = loaded.get("model")
+        version = str(loaded.get("version") or "xgb_v3")
     else:
-        _MODEL = loaded
-    _MODEL_VERSION = loaded.get("version", "xgb_v3") if isinstance(loaded, dict) else "xgb_v3"
+        model = loaded
+        version = "xgb_v3"
+    if model is None or not hasattr(model, "predict_proba"):
+        _mark_missing("incompatible", "incompatible")
+        return None
+    _MODEL = model
+    _MODEL_VERSION = version
+    _LOAD_ERROR = None
     return _MODEL
 
 
@@ -131,15 +150,19 @@ def _window(txn: NormalizedTransaction, history: Sequence[dict], seconds: float)
 
 
 def model_is_loaded() -> bool:
-    return _load() is not None
+    try:
+        return _load() is not None
+    except Exception:
+        return False
 
 
 def model_status() -> dict[str, Any]:
     loaded = model_is_loaded()
     return {
         "model_loaded": loaded,
-        "model_version": _MODEL_VERSION if loaded else "unavailable",
+        "model_version": _MODEL_VERSION if loaded else _MODEL_VERSION or "unavailable",
         "ml_fallback": None if loaded else "conservative_prior_0.5; ALLOW demoted to REVIEW",
+        "load_error": None if loaded else _LOAD_ERROR,
     }
 
 
@@ -222,14 +245,21 @@ def infer_fraud(
             model_version="error",
             features={},
             available=False,
+            error="feature_error",
         )
-    model = _load()
+    try:
+        model = _load()
+    except Exception:
+        _mark_missing("load_error", "error")
+        model = None
     if model is None:
+        reason = _LOAD_ERROR or "unavailable"
         return MlResult(
             fraud_probability=MISSING_MODEL_PRIOR,
-            model_version="unavailable",
+            model_version=_MODEL_VERSION or "unavailable",
             features=vector,
             available=False,
+            error=reason,
         )
     try:
         n_in = int(getattr(model, "n_features_in_", len(LIVE_FEATURE_NAMES)))
@@ -243,6 +273,7 @@ def infer_fraud(
             model_version="error",
             features=vector,
             available=False,
+            error="inference_error",
         )
     return MlResult(
         fraud_probability=max(0.0, min(1.0, proba)),

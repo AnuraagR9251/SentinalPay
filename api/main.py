@@ -186,6 +186,7 @@ class HealthResponse(BaseModel):
     model_loaded: bool
     model_version: str | None = None
     ml_fallback: str | None = None
+    load_error: str | None = None
 
 
 class LoginRequest(BaseModel):
@@ -303,12 +304,22 @@ def root() -> dict[str, str]:
 
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
-    status = model_status()
+    try:
+        status = model_status()
+    except Exception:
+        return HealthResponse(
+            status="ok",
+            model_loaded=False,
+            model_version="error",
+            ml_fallback="conservative_prior_0.5; ALLOW demoted to REVIEW",
+            load_error="status_error",
+        )
     return HealthResponse(
         status="ok",
         model_loaded=status["model_loaded"],
         model_version=status["model_version"],
         ml_fallback=status["ml_fallback"],
+        load_error=status.get("load_error"),
     )
 
 

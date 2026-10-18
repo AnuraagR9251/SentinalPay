@@ -130,6 +130,15 @@ def _session_user(info: Info) -> str:
         raise ValueError(exc.detail) from exc
 
 
+def _enforce_txn_user(info: Info, user_id: str) -> None:
+    """Same session policy for scoreTransaction and evaluateTransaction."""
+    if not require_login():
+        return
+    session_user = _session_user(info)
+    if session_user != user_id:
+        raise ValueError("user mismatch")
+
+
 def _score_payload(result: dict[str, Any]) -> ScorePayload:
     fields = legacy_fields_from_canonical(result)
     hits = [FeatureHit(name=item["name"], value=float(item["value"])) for item in fields["contributions"]]
@@ -209,14 +218,7 @@ class Mutation:
 
     @strawberry.mutation
     def score_transaction(self, info: Info, input: ScoreInput) -> ScorePayload:
-        request = _request(info)
-        if require_login():
-            try:
-                session_user = require_session(request)
-            except HTTPException as exc:
-                raise ValueError(exc.detail) from exc
-            if session_user != input.user_id:
-                raise ValueError("user mismatch")
+        _enforce_txn_user(info, input.user_id)
         raw = {
             "transaction_id": input.transaction_id,
             "amount": input.amount,
@@ -245,7 +247,8 @@ class Mutation:
         return _score_payload(result)
 
     @strawberry.mutation
-    def evaluate_transaction(self, input: EvaluateInput) -> EvaluatePayload:
+    def evaluate_transaction(self, info: Info, input: EvaluateInput) -> EvaluatePayload:
+        _enforce_txn_user(info, input.user_id)
         payload = {
             "user_id": input.user_id,
             "amount": input.amount,

@@ -449,7 +449,12 @@ def rows_from_feed(payload: Any) -> list[tuple[Transaction, RiskAssessment]]:
             continue
         try:
             amount = float(item["amount"])
-            score = float(item.get("risk_score") if item.get("risk_score") is not None else item.get("P_hybrid") or 0.0)
+            raw_score = item.get("risk_score")
+            if raw_score is None:
+                raw_score = item.get("P_hybrid")
+            if raw_score is None:
+                continue
+            score = float(raw_score)
             if amount <= 0 or not (0.0 <= score <= 1.0):
                 continue
             ts = _parse_ts(item["timestamp"])

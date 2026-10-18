@@ -70,6 +70,7 @@ class MlResult:
     model_version: str
     features: dict[str, float] = field(default_factory=dict)
     available: bool = True
+    error: str | None = None
 
 
 @dataclass(frozen=True)

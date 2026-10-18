@@ -101,6 +101,7 @@ def _result_payload(
             "fraud_probability": round(ml.fraud_probability, 4),
             "model_version": ml.model_version,
             "available": ml.available,
+            "error": ml.error,
         },
         "policy": dict(decision.policy),
         "risk_factors": [{"factor": f.factor, "impact": f.impact} for f in decision.risk_factors],

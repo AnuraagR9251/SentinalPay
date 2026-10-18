@@ -175,6 +175,28 @@ def test_http_source_empty_envelope_clears(monkeypatch) -> None:
     assert source.last_error is None
 
 
+def test_rows_from_feed_skips_missing_score() -> None:
+    payload = {
+        "items": [
+            {
+                "payment": {
+                    "id": "tx-noscore",
+                    "user_id": "aarav@senitenial",
+                    "amount": 240.0,
+                    "payee_vpa": "priya.p@oksbi",
+                    "timestamp": "2026-09-28T10:00:00+00:00",
+                    "location": {"status": "omitted", "lat": None, "lon": None},
+                },
+                "canonical": {"decision": "ALLOW", "risk_score": 6},
+                "policy": {"action": "ALLOW", "legacy_tier": "ALLOW"},
+                "models": {"xgboost": {"available": False, "value": None}},
+                "triggered_signals": [],
+            }
+        ]
+    }
+    assert rows_from_feed(payload) == []
+
+
 def test_app_uses_http_source_only() -> None:
     text = (Path(__file__).resolve().parents[1] / "app.py").read_text(encoding="utf-8")
     assert "HttpTransactionSource" in text
