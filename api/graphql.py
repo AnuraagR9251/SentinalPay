@@ -14,7 +14,7 @@ from strawberry.types import Info
 
 from api.compat import legacy_fields_from_canonical, pipeline_payload_from_score
 from detection.privacy import mask_identifier
-from risk.auth import require_login, require_session
+from risk.auth import bearer_token, require_login, require_session
 from risk.ml_layer import model_status
 from risk.pipeline import PipelineError
 from risk.pipeline import evaluate_transaction as run_pipeline
@@ -55,6 +55,13 @@ class ScorePayload:
     canonical_risk_score: Optional[int] = None
     action: Optional[str] = None
     ml_available: Optional[bool] = None
+    challenge_id: Optional[str] = None
+    challenge_kind: Optional[str] = None
+    challenge_note: Optional[str] = None
+    model_probability: Optional[float] = None
+    reason_codes: list[str] | None = None
+    policy_version: Optional[str] = None
+    inference_latency_ms: Optional[float] = None
 
 
 @strawberry.type
@@ -67,6 +74,11 @@ class EvaluatePayload:
     fraud_probability: float
     location_baseline: str
     processing_time_ms: float
+    model_probability: Optional[float] = None
+    model_available: Optional[bool] = None
+    reason_codes: list[str] | None = None
+    policy_version: Optional[str] = None
+    inference_latency_ms: Optional[float] = None
     payload: JSON
 
 
@@ -79,6 +91,9 @@ class LoginPayload:
 @strawberry.type
 class PinPayload:
     ok: bool
+    sandbox: bool = True
+    note: Optional[str] = None
+    error: Optional[str] = None
 
 
 @strawberry.input
@@ -161,6 +176,13 @@ def _score_payload(result: dict[str, Any]) -> ScorePayload:
         canonical_risk_score=fields["canonical_risk_score"],
         action=fields.get("action"),
         ml_available=fields.get("ml_available"),
+        challenge_id=result.get("challenge_id"),
+        challenge_kind=result.get("challenge_kind"),
+        challenge_note=result.get("challenge_note"),
+        model_probability=result.get("model_probability"),
+        reason_codes=list(result.get("reason_codes") or []),
+        policy_version=result.get("policy_version"),
+        inference_latency_ms=result.get("inference_latency_ms"),
     )
 
 
@@ -210,11 +232,29 @@ class Mutation:
         return LoginPayload(token=token, user_id=user_id.strip())
 
     @strawberry.mutation
-    def verify_pin(self, info: Info, pin: str) -> PinPayload:
+    def verify_pin(self, info: Info, pin: str, challenge_id: Optional[str] = None) -> PinPayload:
+        request = _request(info)
+        store = get_store()
+        token = bearer_token(request)
+        if challenge_id:
+            challenge = store.get_challenge(challenge_id.strip())
+            if challenge is None:
+                raise ValueError("unknown_challenge")
+            session_user = store.session_user(token) if token else None
+            user_id = session_user or str(challenge["user_id"])
+            outcome = store.verify_challenge(
+                challenge_id.strip(),
+                user_id=user_id,
+                session_token=token,
+                pin=pin,
+            )
+            if not outcome.get("ok"):
+                raise ValueError(str(outcome.get("error") or "invalid challenge"))
+            return PinPayload(ok=True, sandbox=True, note=outcome.get("note"))
         user_id = _session_user(info)
-        if not get_store().verify_pin(user_id, pin):
+        if not store.verify_pin(user_id, pin):
             raise ValueError("invalid pin")
-        return PinPayload(ok=True)
+        return PinPayload(ok=True, sandbox=True, note="Sandbox PIN, not bank OTP")
 
     @strawberry.mutation
     def score_transaction(self, info: Info, input: ScoreInput) -> ScorePayload:
@@ -235,7 +275,11 @@ class Mutation:
             "device_id": input.device_id,
         }
         try:
-            result = run_pipeline(pipeline_payload_from_score(raw), client_key=input.user_id)
+            result = run_pipeline(
+                pipeline_payload_from_score(raw),
+                client_key=input.user_id,
+                session_token=bearer_token(_request(info)),
+            )
         except PipelineError as exc:
             raise ValueError(str(exc)) from exc
         logging.getLogger("sentinalpay.api").info(
@@ -264,7 +308,7 @@ class Mutation:
             "recent_failures": input.recent_failures,
         }
         try:
-            result = run_pipeline(payload, client_key=input.user_id)
+            result = run_pipeline(payload, client_key=input.user_id, session_token=bearer_token(_request(info)))
         except PipelineError as exc:
             raise ValueError(str(exc)) from exc
         return EvaluatePayload(
@@ -276,6 +320,11 @@ class Mutation:
             fraud_probability=float(result.get("fraud_probability") or 0.0),
             location_baseline=str(result.get("location_baseline") or "UNKNOWN"),
             processing_time_ms=float(result.get("processing_time_ms") or result.get("processing_ms") or 0.0),
+            model_probability=result.get("model_probability"),
+            model_available=result.get("model_available"),
+            reason_codes=list(result.get("reason_codes") or []),
+            policy_version=result.get("policy_version"),
+            inference_latency_ms=result.get("inference_latency_ms"),
             payload=result,
         )
 

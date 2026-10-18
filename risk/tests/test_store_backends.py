@@ -28,6 +28,10 @@ class _FakeRedis:
         bucket = self.z.get(name, {})
         return sum(1 for score in bucket.values() if float(lo) <= float(score) <= float(hi))
 
+    def zrangebyscore(self, name, lo, hi):
+        bucket = self.z.get(name, {})
+        return [key for key, score in bucket.items() if float(lo) <= float(score) <= float(hi)]
+
 
 def test_database_kind() -> None:
     assert database_kind("sqlite:///data/x.db") == "sqlite"
@@ -39,6 +43,12 @@ def test_redis_velocity_does_not_count_old_events() -> None:
     assert cache.add("user:a", 100.0, 10.0) == 1
     assert cache.add("user:a", 102.0, 10.0) == 2
     assert cache.add("user:a", 200.0, 10.0) == 1
+    n, total = cache.add_value("user:a:val", 100.0, 10.0, 10.0)
+    assert n == 1 and total == 10.0
+    n, total = cache.add_value("user:a:val", 102.0, 5.0, 10.0)
+    assert n == 2 and total == 15.0
+    n, total = cache.add_value("user:a:val", 200.0, 7.0, 10.0)
+    assert n == 1 and total == 7.0
 
 
 @pytest.mark.skipif(not os.getenv("SENTINALPAY_TEST_POSTGRES"), reason="Postgres DSN not set")

@@ -520,6 +520,14 @@ export const AppProvider = ({ children }) => {
   };
 
   const verifyPin = async (pin) => {
+    const challengeId = lastScore?.challenge_id;
+    if (challengeId) {
+      try {
+        return await verifyPinViaGraphql(pin, authHeaders(), challengeId);
+      } catch {
+        return false;
+      }
+    }
     if (!sessionToken) return true;
     try {
       return await verifyPinViaGraphql(pin, authHeaders());

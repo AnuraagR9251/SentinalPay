@@ -4,7 +4,13 @@ from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
-from ml.train_xgboost import chronological_thirds, review_operating_point, _leakage_correlations
+from ml.train_xgboost import (
+    brier_and_reliability,
+    chronological_thirds,
+    recall_at_fpr,
+    review_operating_point,
+    _leakage_correlations,
+)
 import numpy as np
 
 
@@ -27,6 +33,16 @@ def test_review_operating_point_counts_catch_and_extra() -> None:
     assert out["fraud_caught"] == 1
     assert out["fraud_recall"] == 0.5
     assert abs(out["legit_review_rate"] - 1 / 3) < 1e-9
+
+
+def test_recall_at_fpr_and_brier() -> None:
+    y = np.array([1, 1, 0, 0, 0, 0, 0, 0, 0, 0])
+    scores = np.array([0.9, 0.2, 0.8, 0.1, 0.05, 0.04, 0.03, 0.02, 0.01, 0.0])
+    at = recall_at_fpr(y, scores, 0.2)
+    assert at["fpr"] <= 0.2
+    cal = brier_and_reliability(y, scores, bins=5)
+    assert cal["brier"] is not None
+    assert cal["brier"] >= 0.0
 
 
 def test_leakage_flags_perfect_copy() -> None:

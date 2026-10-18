@@ -6,10 +6,10 @@ from datetime import datetime
 from math import isfinite
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
-from risk.auth import authenticate_request
+from risk.auth import authenticate_request, bearer_token
 from risk.pipeline import PipelineError, evaluate_transaction
 from risk.store import get_store
 
@@ -52,9 +52,13 @@ class ReviewRequest(BaseModel):
 
 
 @router.post("/transactions/evaluate")
-def evaluate(payload: EvaluateRequest, client_key: str = Depends(authenticate_request)) -> dict[str, Any]:
+def evaluate(payload: EvaluateRequest, request: Request, client_key: str = Depends(authenticate_request)) -> dict[str, Any]:
     try:
-        result = evaluate_transaction(payload.model_dump(), client_key=client_key)
+        result = evaluate_transaction(
+            payload.model_dump(),
+            client_key=client_key,
+            session_token=bearer_token(request),
+        )
     except PipelineError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return result

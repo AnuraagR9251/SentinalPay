@@ -30,6 +30,7 @@ from imblearn.over_sampling import SMOTE
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     average_precision_score,
+    brier_score_loss,
     f1_score,
     precision_recall_curve,
     precision_score,
@@ -278,6 +279,48 @@ def review_operating_point(y_true: np.ndarray, scores: np.ndarray, review_at: fl
     }
 
 
+def recall_at_fpr(y_true: np.ndarray, scores: np.ndarray, fpr_target: float = 0.05) -> dict[str, float]:
+    """Highest recall whose false-positive rate is at most fpr_target."""
+    legit = y_true == 0
+    fraud = y_true == 1
+    legit_n = int(np.sum(legit))
+    fraud_n = int(np.sum(fraud))
+    best = {"fpr_target": float(fpr_target), "threshold": 1.0, "fpr": 0.0, "recall": 0.0}
+    if legit_n == 0 or scores.size == 0:
+        return best
+    for thresh in np.unique(scores):
+        flagged = scores >= thresh
+        fpr = float(np.sum(flagged & legit) / legit_n)
+        if fpr > fpr_target:
+            continue
+        rec = float(np.sum(flagged & fraud) / fraud_n) if fraud_n else 0.0
+        if rec >= best["recall"]:
+            best = {"fpr_target": float(fpr_target), "threshold": float(thresh), "fpr": fpr, "recall": rec}
+    return best
+
+
+def brier_and_reliability(y_true: np.ndarray, scores: np.ndarray, bins: int = 10) -> dict[str, Any]:
+    if y_true.size == 0:
+        return {"brier": None, "bins": []}
+    brier = float(brier_score_loss(y_true, np.clip(scores, 0.0, 1.0)))
+    edges = np.linspace(0.0, 1.0, bins + 1)
+    rows = []
+    for i in range(bins):
+        mask = (scores >= edges[i]) & (scores < edges[i + 1] if i < bins - 1 else scores <= edges[i + 1])
+        if not np.any(mask):
+            continue
+        rows.append(
+            {
+                "bin_left": float(edges[i]),
+                "bin_right": float(edges[i + 1]),
+                "mean_predicted": float(np.mean(scores[mask])),
+                "mean_actual": float(np.mean(y_true[mask])),
+                "n": int(np.sum(mask)),
+            }
+        )
+    return {"brier": brier, "bins": rows}
+
+
 def _pack_clf_metrics(y_true: np.ndarray, scores: np.ndarray, thresh: float) -> dict[str, float]:
     predicted = (scores >= thresh).astype(np.int32)
     return {
@@ -287,6 +330,8 @@ def _pack_clf_metrics(y_true: np.ndarray, scores: np.ndarray, thresh: float) -> 
         "f1": float(f1_score(y_true, predicted, zero_division=0)),
         "average_precision": float(average_precision_score(y_true, scores)) if len(np.unique(y_true)) > 1 else float("nan"),
         "roc_auc": float(roc_auc_score(y_true, scores)) if len(np.unique(y_true)) > 1 else float("nan"),
+        "brier": float(brier_score_loss(y_true, np.clip(scores, 0.0, 1.0))) if y_true.size else float("nan"),
+        "recall_at_5pct_fpr": recall_at_fpr(y_true, scores, 0.05),
         "review": review_operating_point(y_true, scores, thresh),
     }
 
@@ -352,6 +397,7 @@ def train() -> dict[str, float]:
     lr_test = _fit_logreg(x_train, y_train, x_test)
     rule_test = _rule_scores(test_df)
     xgb_metrics = _pack_clf_metrics(y_test, xgb_test, thresh)
+    xgb_metrics["calibration_val"] = brier_and_reliability(y_val, xgb_val)
     lr_metrics = _pack_clf_metrics(y_test, lr_test, _best_threshold(y_val, _fit_logreg(x_train, y_train, x_val)))
     rule_metrics = _pack_clf_metrics(y_test, rule_test, _best_threshold(y_val, _rule_scores(val_df)))
 
@@ -387,6 +433,7 @@ def train() -> dict[str, float]:
             "Thresholds tuned on a later chronological slice; newest slice is the test report.",
             "Experimental — not a certified fraud detector.",
             "PaySim fraud is time-clustered; the newest slice can be mostly fraud, so PR/review rates are not a real UPI false-positive rate.",
+            "Not production-ready: synthetic labels, no UPI ATO labels, calibration is experimental.",
         ],
     }
     print(f"evaluation=synthetic_paysim split=60/20/20")

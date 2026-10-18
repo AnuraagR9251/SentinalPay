@@ -45,6 +45,11 @@ def inspect_security(
 
     store.cache.add(f"user:{txn.user_id}:tx:5m", event_ts, 300.0)
     store.cache.add(f"user:{txn.user_id}:tx:1h", event_ts, 3600.0)
+    count_5m, sum_5m = store.cache.add_value(f"user:{txn.user_id}:val:5m", event_ts, txn.amount, 300.0)
+    store.cache.add_value(f"user:{txn.user_id}:val:1h", event_ts, txn.amount, 3600.0)
+    high_spend = count_5m >= 3 and sum_5m >= 100000
+    if high_spend:
+        notes.append("high 5-minute spend velocity")
     if txn.device_id:
         store.cache.add(f"device:{txn.device_id}:activity", event_ts, 3600.0)
         users = store.device_users(txn.device_id)
@@ -63,6 +68,8 @@ def inspect_security(
         score += 15
     if any("device linked" in note for note in notes):
         score += 15
+    if high_spend:
+        score += 10
     return SecuritySignals(
         duplicate_transaction=duplicate,
         replay_detected=replay,

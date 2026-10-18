@@ -5,9 +5,11 @@ POST /graphql                       — same engine, GraphQL query/mutation
 POST /api/v1/transactions/evaluate  — canonical REST contract
 GET  /transactions                  — desk feed
 GET  /health
+GET  /ready
+POST /webhooks/razorpay              — signed TEST webhooks only
 
-# TODO: apply rate limiting here before production use
-# TODO: persist via parameterized queries / ORM only — never string-formatted SQL
+# Rate limiting lives in risk.security (per client_key). Tighten at the HTTP edge before production.
+# Persistence uses parameterized SQL in risk.store.
 """
 
 from __future__ import annotations
@@ -29,7 +31,8 @@ from api.compat import legacy_fields_from_canonical, pipeline_payload_from_score
 from api.graphql import graphql_router
 from api.v1 import router as v1_router
 from detection.privacy import mask_identifier
-from risk.auth import require_login, require_session
+from payments.razorpay import RazorpayConfigError, get_razorpay_adapter
+from risk.auth import bearer_token, require_login, require_session
 from risk.ml_layer import model_status
 from risk.pipeline import PipelineError, evaluate_transaction
 from risk.store import get_store
@@ -111,6 +114,9 @@ class ScoreResponse(BaseModel):
     canonical_risk_score: int | None = None
     action: str | None = None
     ml_available: bool | None = None
+    challenge_id: str | None = None
+    challenge_kind: str | None = None
+    challenge_note: str | None = None
 
 
 class PrettyJSONResponse(JSONResponse):
@@ -198,6 +204,7 @@ class LoginRequest(BaseModel):
 
 class PinRequest(BaseModel):
     pin: str = Field(..., min_length=4, max_length=8)
+    challenge_id: str | None = None
 
 
 def _cors_origins() -> list[str]:
@@ -318,6 +325,24 @@ def root() -> dict[str, str]:
         "score": "/score",
         "transactions": "/transactions",
         "evaluate": "/api/v1/transactions/evaluate",
+        "ready": "/ready",
+    }
+
+
+@app.get("/ready")
+def ready() -> dict[str, Any]:
+    """Process can accept traffic. Model missing is still ready (fail-closed on ALLOW)."""
+    store_ok = True
+    try:
+        get_store().count_transactions()
+    except Exception:
+        store_ok = False
+    status = model_status()
+    return {
+        "ready": store_ok,
+        "store": store_ok,
+        "model_loaded": bool(status.get("model_loaded")),
+        "model_version": status.get("model_version"),
     }
 
 
@@ -353,10 +378,27 @@ def login(payload: LoginRequest) -> dict[str, Any]:
 
 @app.post("/pin/verify")
 def verify_pin(payload: PinRequest, request: Request) -> dict[str, Any]:
+    store = get_store()
+    token = bearer_token(request)
+    if payload.challenge_id:
+        challenge = store.get_challenge(payload.challenge_id.strip())
+        if challenge is None:
+            raise HTTPException(status_code=401, detail="unknown_challenge")
+        session_user = store.session_user(token) if token else None
+        user_id = session_user or str(challenge["user_id"])
+        outcome = store.verify_challenge(
+            payload.challenge_id.strip(),
+            user_id=user_id,
+            session_token=token,
+            pin=payload.pin,
+        )
+        if not outcome.get("ok"):
+            raise HTTPException(status_code=401, detail=str(outcome.get("error") or "invalid challenge"))
+        return outcome
     user_id = require_session(request)
-    if not get_store().verify_pin(user_id, payload.pin):
+    if not store.verify_pin(user_id, payload.pin):
         raise HTTPException(status_code=401, detail="invalid pin")
-    return {"ok": True}
+    return {"ok": True, "sandbox": True, "note": "Sandbox PIN, not bank OTP"}
 
 
 @app.post("/score", response_model=ScoreResponse)
@@ -366,7 +408,11 @@ def score(payload: ScoreRequest, request: Request) -> ScoreResponse:
         if session_user != payload.user_id:
             raise HTTPException(status_code=403, detail="user mismatch")
     try:
-        result = evaluate_transaction(pipeline_payload_from_score(payload.model_dump()), client_key=payload.user_id)
+        result = evaluate_transaction(
+            pipeline_payload_from_score(payload.model_dump()),
+            client_key=payload.user_id,
+            session_token=bearer_token(request),
+        )
     except PipelineError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     fields = legacy_fields_from_canonical(result)
@@ -383,8 +429,49 @@ def score(payload: ScoreRequest, request: Request) -> ScoreResponse:
             **fields,
             "top_contributing_features": [FeatureHit(**hit) for hit in fields["top_contributing_features"]],
             "contributions": [FeatureHit(**hit) for hit in fields["contributions"]],
+            "challenge_id": result.get("challenge_id"),
+            "challenge_kind": result.get("challenge_kind"),
+            "challenge_note": result.get("challenge_note"),
         }
     )
+
+
+@app.post("/webhooks/razorpay")
+async def razorpay_webhook(request: Request) -> dict[str, Any]:
+    adapter = get_razorpay_adapter()
+    if not adapter.webhook_secret:
+        raise HTTPException(status_code=503, detail="RAZORPAY_WEBHOOK_SECRET not configured")
+    body = await request.body()
+    outcome = adapter.ingest_event(
+        body=body,
+        signature=request.headers.get("X-Razorpay-Signature"),
+        headers={k: v for k, v in request.headers.items()},
+    )
+    if not outcome.get("accepted"):
+        raise HTTPException(status_code=401, detail=str(outcome.get("error") or "rejected"))
+    return outcome
+
+
+@app.post("/payments/razorpay/orders")
+def razorpay_order(payload: dict[str, Any]) -> dict[str, Any]:
+    adapter = get_razorpay_adapter()
+    try:
+        ref = adapter.create_or_reference(
+            amount=float(payload.get("amount") or 0),
+            currency=str(payload.get("currency") or "INR"),
+            receipt=str(payload.get("receipt") or payload.get("transaction_id") or "demo"),
+            notes={"transaction_id": str(payload.get("transaction_id") or "")},
+        )
+    except RazorpayConfigError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {
+        "provider": ref.provider,
+        "id": ref.provider_payment_id,
+        "status": ref.status,
+        "amount": ref.amount,
+        "currency": ref.currency,
+        "note": "advisory scoring only; Razorpay still authorizes. Redirect is not success.",
+    }
 
 
 @app.get("/transactions", response_model=TransactionFeed, response_class=PrettyJSONResponse)

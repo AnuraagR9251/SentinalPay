@@ -17,6 +17,13 @@ const SCORE_FIELDS = `
   canonicalRiskScore
   action
   mlAvailable
+  challengeId
+  challengeKind
+  challengeNote
+  modelProbability
+  reasonCodes
+  policyVersion
+  inferenceLatencyMs
   topContributingFeatures { name value }
   contributions { name value }
 `;
@@ -40,6 +47,13 @@ function toRestShape(node) {
     canonical_risk_score: node.canonicalRiskScore,
     action: node.action,
     ml_available: node.mlAvailable,
+    challenge_id: node.challengeId || null,
+    challenge_kind: node.challengeKind || null,
+    challenge_note: node.challengeNote || null,
+    model_probability: node.modelProbability,
+    reason_codes: node.reasonCodes || [],
+    policy_version: node.policyVersion || null,
+    inference_latency_ms: node.inferenceLatencyMs,
     top_contributing_features: node.topContributingFeatures || [],
     contributions: node.contributions || []
   };
@@ -81,10 +95,12 @@ export async function loginViaGraphql(userId, password) {
   return { token: data.login.token, user_id: data.login.userId };
 }
 
-export async function verifyPinViaGraphql(pin, headers = {}) {
+export async function verifyPinViaGraphql(pin, headers = {}, challengeId = null) {
   const data = await graphql(
-    `mutation Pin($pin: String!) { verifyPin(pin: $pin) { ok } }`,
-    { pin },
+    `mutation Pin($pin: String!, $challengeId: String) {
+      verifyPin(pin: $pin, challengeId: $challengeId) { ok note }
+    }`,
+    { pin, challengeId: challengeId || null },
     headers
   );
   return Boolean(data.verifyPin?.ok);

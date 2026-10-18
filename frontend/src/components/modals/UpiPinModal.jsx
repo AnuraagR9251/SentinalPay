@@ -75,14 +75,14 @@ export const UpiPinModal = () => {
         {/* Security badge & Header */}
         <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-500/10 text-blue-400 text-xs font-semibold mb-3">
           <Lock className="w-3 h-3" />
-          <span>{stepUp ? 'RE-CONFIRM UPI PIN' : 'ENTER UPI PIN'}</span>
+          <span>{stepUp ? 'SANDBOX STEP-UP PIN' : 'ENTER UPI PIN'}</span>
         </div>
 
         <h3 className="text-xl font-bold text-white font-heading">
           {user.currency}{amount?.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
         </h3>
         <p className="text-xs text-slate-400 mt-0.5">
-          {stepUp ? 'Step-up confirmation for' : 'Paying to'}{' '}
+          {stepUp ? 'Sandbox re-confirm (not bank OTP) for' : 'Paying to'}{' '}
           <span className="text-white font-semibold">{recipientName}</span>
         </p>
 

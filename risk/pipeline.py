@@ -7,9 +7,11 @@ from typing import Any, Mapping, Sequence
 
 from detection.features.location import haversine_km
 from risk.aggregate import aggregate_and_decide
+from risk.ato import merge_ato
 from risk.behavior import analyze_behavior
 from risk.config import RiskConfig
 from risk.contracts import NormalizedTransaction
+from risk.envelope import attach_public_envelope
 from risk.ml_layer import infer_fraud
 from risk.normalize import NormalizationError, normalize_transaction
 from risk.rules import run_rules
@@ -64,7 +66,7 @@ def _result_payload(
     engine_version: str,
     elapsed_ms: float,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "transaction_id": txn_id,
         "user_id": user_id,
         "risk_score": decision.risk_score,
@@ -107,6 +109,7 @@ def _result_payload(
         "risk_factors": [{"factor": f.factor, "impact": f.impact} for f in decision.risk_factors],
         "components": {k: round(v, 2) for k, v in decision.components.items()},
     }
+    return attach_public_envelope(payload)
 
 
 def evaluate_transaction(
@@ -115,6 +118,7 @@ def evaluate_transaction(
     client_key: str = "local",
     store: RiskStore | None = None,
     config: RiskConfig | None = None,
+    session_token: str | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     cfg = config or RiskConfig.load()
@@ -134,13 +138,13 @@ def evaluate_transaction(
             security["duplicate_transaction"] = True
             replay["security"] = security
         replay["action"] = replay.get("action") or policy_action(replay)
-        return replay
+        return attach_public_envelope(replay)
 
     security = inspect_security(txn, db, cfg, client_key=client_key)
     history = db.user_history(txn.user_id)
     home = _home_from_history(history)
     location_baseline = _location_baseline(txn, home)
-    rules = run_rules(txn, history, cfg)
+    rules = merge_ato(run_rules(txn, history, cfg), security)
     behavior = analyze_behavior(txn, history)
     ml = infer_fraud(txn, history, home)
     decision = aggregate_and_decide(security, rules, behavior, ml, cfg)
@@ -165,5 +169,11 @@ def evaluate_transaction(
             replay = dict(cached)
             replay["idempotent"] = True
             replay["action"] = replay.get("action") or policy_action(replay)
-            return replay
-    return result
+            return attach_public_envelope(replay)
+    if result.get("action") == "STEP_UP":
+        challenge = db.create_challenge(txn.user_id, txn.transaction_id, session_token)
+        result["challenge_id"] = challenge["challenge_id"]
+        result["challenge_kind"] = "sandbox_pin"
+        result["challenge_note"] = "Sandbox PIN confirmation, not bank OTP"
+        db.update_result_json(txn.transaction_id, result)
+    return attach_public_envelope(result)
