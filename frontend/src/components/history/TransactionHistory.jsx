@@ -63,14 +63,14 @@ export const TransactionHistory = () => {
       {/* Header Banner */}
       <div className="rounded-3xl p-6 bg-gradient-to-br from-slate-900 via-indigo-950 to-blue-950 border border-blue-500/20 shadow-xl flex items-center justify-between">
         <div>
-          <span className="text-xs uppercase font-bold tracking-wider text-blue-400">
-            Audit Ledger
+          <span className="text-xs uppercase font-bold tracking-wider text-amber-300">
+            Sandbox ledger
           </span>
           <h1 className="text-2xl font-black text-white font-heading mt-1">
             Transaction History
           </h1>
           <p className="text-xs text-slate-300 mt-1 max-w-md">
-            Complete cryptographic audit trail of all peer transfers, bill settlements, and rewards.
+            Local demo history. UTR values are generated here — not NPCI or bank references.
           </p>
         </div>
 
@@ -176,6 +176,7 @@ export const TransactionHistory = () => {
                     </h4>
                     <p className="text-[11px] text-slate-400">
                       {tx.timestamp} • <span className="text-slate-300">{tx.category}</span>
+                      {tx.status ? ` • ${tx.status}` : ''}
                     </p>
                   </div>
                 </div>

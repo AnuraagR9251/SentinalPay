@@ -12,6 +12,22 @@ from risk.pipeline import evaluate_transaction
 from risk.store import RiskStore
 
 
+def test_committed_xgb_v3_artifact_loads() -> None:
+    from risk.ml_layer import REPO_ROOT
+
+    path = REPO_ROOT / "ml" / "models" / "xgboost_model.pkl"
+    assert path.is_file(), "ml/models/xgboost_model.pkl must be tracked for a clean checkout"
+    reset_model()
+    try:
+        status = model_status()
+        assert status["model_loaded"] is True
+        assert status["ml_fallback"] is None
+        assert status["model_version"]
+        assert status["model_version"] != "unavailable"
+    finally:
+        reset_model()
+
+
 def test_missing_model_uses_prior_and_blocks_allow(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("SENTINALPAY_XGB_MODEL", str(tmp_path / "absent.pkl"))
     reset_model()

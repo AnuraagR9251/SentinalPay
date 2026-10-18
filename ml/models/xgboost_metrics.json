@@ -1,0 +1,101 @@
+{
+  "evaluation": "synthetic_paysim",
+  "split": "chronological_60_20_20",
+  "precision": 0.9622025198320112,
+  "recall": 0.9995152690256908,
+  "f1": 0.9805040418449834,
+  "roc_auc": 0.7285740149156977,
+  "average_precision": 0.985032797270136,
+  "threshold": 0.16951873898506165,
+  "review": {
+    "review_at": 0.16951873898506165,
+    "fraud_caught": 2062,
+    "fraud_recall": 0.9995152690256908,
+    "legit_review_rate": 0.9759036144578314,
+    "precision": 0.9622025198320112
+  },
+  "baselines": {
+    "rules": {
+      "threshold": 0.36,
+      "precision": 0.9613233923578751,
+      "recall": 1.0,
+      "f1": 0.980280351627465,
+      "average_precision": 0.961379635606991,
+      "roc_auc": 0.5007270964614638,
+      "review": {
+        "review_at": 0.36,
+        "fraud_caught": 2063,
+        "fraud_recall": 1.0,
+        "legit_review_rate": 1.0,
+        "precision": 0.9613233923578751
+      }
+    },
+    "logistic_regression": {
+      "threshold": 0.12282309681177139,
+      "precision": 0.9622201492537313,
+      "recall": 1.0,
+      "f1": 0.9807463750891372,
+      "average_precision": 0.9794229488891633,
+      "roc_auc": 0.6778057455220786,
+      "review": {
+        "review_at": 0.12282309681177139,
+        "fraud_caught": 2063,
+        "fraud_recall": 1.0,
+        "legit_review_rate": 0.9759036144578314,
+        "precision": 0.9622201492537313
+      }
+    },
+    "xgboost": {
+      "threshold": 0.16951873898506165,
+      "precision": 0.9622025198320112,
+      "recall": 0.9995152690256908,
+      "f1": 0.9805040418449834,
+      "average_precision": 0.985032797270136,
+      "roc_auc": 0.7285740149156977,
+      "review": {
+        "review_at": 0.16951873898506165,
+        "fraud_caught": 2062,
+        "fraud_recall": 0.9995152690256908,
+        "legit_review_rate": 0.9759036144578314,
+        "precision": 0.9622025198320112
+      }
+    }
+  },
+  "feature_names": [
+    "amount_zscore",
+    "new_payee",
+    "velocity_5m",
+    "velocity_60m",
+    "time_since_last",
+    "dist_from_home",
+    "dist_from_last",
+    "impossible_travel",
+    "vpn_proxy",
+    "missing_location",
+    "hour_of_day",
+    "amount_to_median",
+    "amount_spike",
+    "velocity_1m",
+    "velocity_5m_value",
+    "velocity_60m_value",
+    "new_device",
+    "recent_device_change",
+    "recipient_prior_count",
+    "history_size",
+    "missing_device",
+    "location_reliable"
+  ],
+  "max_abs_label_corr": 0.27523287806228747,
+  "high_corr_features": {},
+  "geo_leak": false,
+  "model_version": "xgb_v3",
+  "geo_feature_importance_share": 0.0,
+  "limitations": [
+    "Synthetic-data evaluation (PaySim). Not a real UPI fraud holdout.",
+    "No labeled historical UPI set was available; statement CSV is unlabeled and unused for metrics.",
+    "CASH_OUT / full-drain flags excluded from ML to avoid simulator label leakage.",
+    "Thresholds tuned on a later chronological slice; newest slice is the test report.",
+    "Experimental \u2014 not a certified fraud detector.",
+    "PaySim fraud is time-clustered; the newest slice can be mostly fraud, so PR/review rates are not a real UPI false-positive rate."
+  ]
+}

@@ -34,11 +34,12 @@ export const PaymentModal = () => {
 
   const categories = ['Dining', 'Shopping', 'Bills', 'Groceries', 'Rent', 'Travel', 'General'];
 
+  const payAmount = amount !== '' ? amount : (prefillAmount || '');
   const quickAmounts = [100, 200, 500, 1000, 2000];
 
   const handleProceedToPin = (e) => {
     e.preventDefault();
-    const num = parseFloat(amount);
+    const num = parseFloat(payAmount);
     if (isNaN(num) || num <= 0) return;
 
     sound.playTap();
@@ -112,7 +113,7 @@ export const PaymentModal = () => {
                 required
                 autoFocus
                 placeholder="0"
-                value={amount}
+                value={payAmount}
                 onChange={(e) => setAmount(e.target.value)}
                 className="w-44 text-3xl sm:text-4xl font-extrabold text-white bg-transparent text-center focus:outline-none placeholder-slate-600 font-heading"
               />
@@ -216,12 +217,15 @@ export const PaymentModal = () => {
           {/* Submit Button */}
           <button
             type="submit"
-            disabled={!amount || parseFloat(amount) <= 0}
+            disabled={!payAmount || parseFloat(payAmount) <= 0}
             className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-emerald-600 hover:from-blue-500 hover:to-emerald-500 disabled:opacity-50 text-white font-bold text-sm shadow-xl shadow-blue-600/30 transition-all flex items-center justify-center gap-2 cursor-pointer"
           >
-            <span>Proceed to Pay {user.currency}{amount || '0'}</span>
+            <span>Proceed to Pay {user.currency}{payAmount || '0'}</span>
             <ArrowRight className="w-4 h-4" />
           </button>
+          <p className="text-[10px] text-center text-slate-500 mt-2">
+            Sandbox debit only — not NPCI or bank settlement.
+          </p>
         </form>
       </div>
     </div>

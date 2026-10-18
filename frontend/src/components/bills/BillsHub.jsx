@@ -65,14 +65,14 @@ export const BillsHub = () => {
       <div className="rounded-3xl p-6 bg-gradient-to-br from-blue-900/50 via-slate-900 to-indigo-950 border border-blue-500/20 shadow-xl">
         <div className="flex items-center justify-between">
           <div>
-            <span className="text-xs uppercase font-bold tracking-wider text-blue-400">
-              Bharat BillPay (BBPS) Supported
+            <span className="text-xs uppercase font-bold tracking-wider text-amber-300">
+              Sandbox bills · not BBPS
             </span>
             <h1 className="text-2xl font-black text-white font-heading mt-1">
               Bills & Utilities Hub
             </h1>
             <p className="text-xs text-slate-300 mt-1 max-w-md">
-              Instant bill payments with zero convenience fees and guaranteed cashback rewards on every payment.
+              Demo bill list only. Paid is a local status after a sandbox debit — not a biller or NPCI settlement.
             </p>
           </div>
           <div className="hidden sm:flex w-16 h-16 rounded-2xl bg-blue-600/20 border border-blue-500/30 items-center justify-center text-blue-400">

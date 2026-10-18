@@ -110,7 +110,7 @@ Retrain the model after changing features **only if the PaySim CSV is already on
 py -3 ml/train_xgboost.py
 ```
 
-Writes `ml/models/xgboost_model.pkl` and `ml/models/xgboost_metrics.json` (synthetic-data evaluation). Those artefacts are gitignored.
+The repo tracks a small `ml/models/xgboost_model.pkl` (PaySim **xgb_v3**) so a clean checkout can load the model. `GET /health` must show `model_loaded: true` on the machine you present from. PaySim CSV and other `*.pkl` files stay gitignored. Retrain only if that CSV is already local.
 
 ## Tests
 

@@ -41,6 +41,12 @@ datasets/
 models/
 ml/artifacts/
 
+# Small versioned demo booster only (PaySim xgb_v3). Parent dir must be un-ignored first.
+!ml/models/
+!ml/models/xgboost_model.pkl
+!ml/models/xgboost_metrics.json
+!ml/models/README.md
+
 # OS / editor
 .DS_Store
 Thumbs.db

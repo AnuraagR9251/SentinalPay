@@ -82,7 +82,7 @@ export const UpiPinModal = () => {
           {user.currency}{amount?.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
         </h3>
         <p className="text-xs text-slate-400 mt-0.5">
-          {stepUp ? 'Sandbox re-confirm (not bank OTP) for' : 'Paying to'}{' '}
+          {stepUp ? 'Sandbox re-confirm (not bank OTP) for' : 'Sandbox PIN (not bank UPI) to'}{' '}
           <span className="text-white font-semibold">{recipientName}</span>
         </p>
 
