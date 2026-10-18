@@ -84,7 +84,7 @@ http://127.0.0.1:8000/graphql
 
 REST `/score`, `/login`, and `/pin/verify` stay.
 
-Demo login (only if `SENTINALPAY_REQUIRE_LOGIN=1` or you call `/login`): `aarav@senitenial` / `demo123` / PIN `1234`.
+Demo login (only if `SENTINALPAY_REQUIRE_LOGIN=1` or you call `/login`): `aarav@senitenial` / `demo123` / PIN `1234`. Sessions expire (default 12h) and are stored hashed. Set `SENTINALPAY_REQUIRE_LOGIN=1` before enabling Razorpay keys.
 
 Frontend: `npm run dev` in `frontend/`. Set `VITE_REQUIRE_LOGIN=1` to show the login gate.
 

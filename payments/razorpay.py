@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import os
+import time
 from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -93,7 +94,14 @@ class RazorpayTestAdapter:
         self._payments[ref.provider_payment_id] = ref
         return ref
 
-    def ingest_event(self, *, body: bytes, signature: str | None, headers: dict[str, str]) -> dict[str, Any]:
+    def ingest_event(
+        self,
+        *,
+        body: bytes,
+        signature: str | None,
+        headers: dict[str, str],
+        ledger: Any | None = None,
+    ) -> dict[str, Any]:
         del headers
         if not self.verify_signature(body, signature):
             return {"accepted": False, "error": "invalid_signature"}
@@ -101,39 +109,101 @@ class RazorpayTestAdapter:
             payload = json.loads(body.decode("utf-8"))
         except json.JSONDecodeError:
             return {"accepted": False, "error": "invalid_json"}
-        event_id = str(payload.get("id") or payload.get("event") or "")
+        event_id = str(payload.get("id") or "").strip()
+        if not event_id:
+            return {"accepted": False, "error": "missing_event_id"}
         entity = ((payload.get("payload") or {}).get("payment") or {}).get("entity") or {}
-        payment_id = str(entity.get("id") or "")
-        created = int(payload.get("created_at") or entity.get("created_at") or 0)
-        prior = self._events.get(event_id)
-        if prior:
-            return {"accepted": True, "duplicate": True, "event_id": event_id, "status": prior.get("status")}
-        # Out-of-order: keep the newest created_at per payment_id.
+        payment_id = str(entity.get("id") or "").strip()
+        try:
+            created = int(payload.get("created_at") or entity.get("created_at") or 0)
+        except (TypeError, ValueError):
+            created = 0
+        now = int(time.time())
+        max_age = int(os.getenv("SENTINALPAY_WEBHOOK_MAX_AGE_SECONDS", "259200") or 259200)
+        if created <= 0 or created > now + 300 or now - created > max_age:
+            return {"accepted": False, "error": "stale_or_future_event"}
         status = map_razorpay_status(entity.get("status"))
-        prior_created = self._latest_created.get(payment_id, 0)
-        if payment_id and created and created < prior_created:
-            return {
-                "accepted": True,
-                "out_of_order": True,
-                "event_id": event_id,
-                "status": self._payments[payment_id].status if payment_id in self._payments else "unknown",
-                "note": "older event ignored",
-            }
+        payload_hash = hashlib.sha256(body).hexdigest()
+        amount = float(entity.get("amount") or 0) / 100.0
+        currency = str(entity.get("currency") or "INR")
+        order_id = str(entity.get("order_id") or "") or None
+
+        if ledger is not None:
+            prior = ledger.get_payment_event(event_id)
+            if prior:
+                return {
+                    "accepted": True,
+                    "duplicate": True,
+                    "event_id": event_id,
+                    "status": prior.get("status"),
+                }
+            prior_created = ledger.latest_payment_created(payment_id) if payment_id else 0
+            ignored = bool(payment_id and created < prior_created)
+            inserted = ledger.insert_payment_event(
+                event_id=event_id,
+                payment_id=payment_id,
+                status=status,
+                provider_created_at=created,
+                payload_hash=payload_hash,
+                ignored=ignored,
+            )
+            if not inserted:
+                prior = ledger.get_payment_event(event_id) or {}
+                return {
+                    "accepted": True,
+                    "duplicate": True,
+                    "event_id": event_id,
+                    "status": prior.get("status"),
+                }
+            if ignored:
+                current = ledger.get_provider_payment(payment_id) or {}
+                return {
+                    "accepted": True,
+                    "out_of_order": True,
+                    "event_id": event_id,
+                    "status": current.get("status") or "unknown",
+                    "note": "older event ignored",
+                }
+            if payment_id:
+                ledger.upsert_provider_payment(
+                    payment_id=payment_id,
+                    status=status,
+                    amount=amount,
+                    currency=currency,
+                    order_id=order_id,
+                    latest_created_at=created,
+                )
+        else:
+            prior = self._events.get(event_id)
+            if prior:
+                return {"accepted": True, "duplicate": True, "event_id": event_id, "status": prior.get("status")}
+            prior_created = self._latest_created.get(payment_id, 0)
+            if payment_id and created < prior_created:
+                return {
+                    "accepted": True,
+                    "out_of_order": True,
+                    "event_id": event_id,
+                    "status": self._payments[payment_id].status if payment_id in self._payments else "unknown",
+                    "note": "older event ignored",
+                }
+
         ref = PaymentRef(
             provider=self.provider,
             provider_payment_id=payment_id or event_id,
-            amount=float(entity.get("amount") or 0) / 100.0,
-            currency=str(entity.get("currency") or "INR"),
+            amount=amount,
+            currency=currency,
             status=status,
-            order_id=str(entity.get("order_id") or "") or None,
+            order_id=order_id,
         )
         if payment_id:
             self._payments[payment_id] = ref
-            if created >= prior_created:
-                self._latest_created[payment_id] = created
-        record = {"event_id": event_id, "status": status, "created_at": created, "payment_id": payment_id}
-        if event_id:
-            self._events[event_id] = record
+            self._latest_created[payment_id] = max(created, self._latest_created.get(payment_id, 0))
+        self._events[event_id] = {
+            "event_id": event_id,
+            "status": status,
+            "created_at": created,
+            "payment_id": payment_id,
+        }
         return {
             "accepted": True,
             "duplicate": False,
@@ -149,7 +219,18 @@ class RazorpayTestAdapter:
             },
         }
 
-    def fetch_status(self, provider_payment_id: str) -> PaymentRef:
+    def fetch_status(self, provider_payment_id: str, ledger: Any | None = None) -> PaymentRef:
+        if ledger is not None:
+            row = ledger.get_provider_payment(provider_payment_id)
+            if row:
+                return PaymentRef(
+                    provider=self.provider,
+                    provider_payment_id=provider_payment_id,
+                    amount=float(row.get("amount") or 0),
+                    currency=str(row.get("currency") or "INR"),
+                    status=str(row.get("status") or "unknown"),
+                    order_id=row.get("order_id"),
+                )
         cached = self._payments.get(provider_payment_id)
         if cached:
             return cached

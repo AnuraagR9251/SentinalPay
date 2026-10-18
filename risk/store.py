@@ -8,6 +8,7 @@ those fields are never accepted.
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import sqlite3
@@ -64,6 +65,15 @@ class _PostgresConn:
             adapted += " ON CONFLICT (token) DO NOTHING"
         elif "INSERT INTO challenges " in adapted and "ON CONFLICT" not in adapted:
             adapted += " ON CONFLICT (challenge_id) DO NOTHING"
+        elif "INSERT INTO payment_events " in adapted and "ON CONFLICT" not in adapted:
+            adapted += " ON CONFLICT (event_id) DO NOTHING"
+        elif "INSERT INTO provider_payments " in adapted and "ON CONFLICT" not in adapted:
+            adapted += (
+                " ON CONFLICT (payment_id) DO UPDATE SET"
+                " status = EXCLUDED.status, amount = EXCLUDED.amount,"
+                " currency = EXCLUDED.currency, order_id = EXCLUDED.order_id,"
+                " latest_created_at = EXCLUDED.latest_created_at, updated_at = EXCLUDED.updated_at"
+            )
         return self._conn.execute(adapted, params)
 
     def executescript(self, script: str) -> None:
@@ -188,7 +198,26 @@ CREATE TABLE IF NOT EXISTS auth_accounts (
 CREATE TABLE IF NOT EXISTS sessions (
     token TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    expires_at TEXT
+);
+CREATE TABLE IF NOT EXISTS payment_events (
+    event_id TEXT PRIMARY KEY,
+    payment_id TEXT,
+    status TEXT NOT NULL,
+    provider_created_at INTEGER NOT NULL DEFAULT 0,
+    payload_hash TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    ignored INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS provider_payments (
+    payment_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    amount REAL,
+    currency TEXT,
+    order_id TEXT,
+    latest_created_at INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS challenges (
     challenge_id TEXT PRIMARY KEY,
@@ -290,14 +319,20 @@ class RiskStore:
                 conn.executescript(_PG_SCHEMA) if hasattr(conn, "executescript") else self._exec_script(conn, _PG_SCHEMA)
             else:
                 conn.executescript(_SCHEMA)
-                cols = {row[1] for row in conn.execute("PRAGMA table_info(risk_assessments)")}
-                if "result_json" not in cols:
-                    conn.execute("ALTER TABLE risk_assessments ADD COLUMN result_json TEXT")
-                    conn.commit()
+                self._ensure_sqlite_columns(conn)
         if seed_demo is None:
             seed_demo = path is None
         if seed_demo:
             self.ensure_demo_accounts()
+
+    def _ensure_sqlite_columns(self, conn: Any) -> None:
+        assessments = {row[1] for row in conn.execute("PRAGMA table_info(risk_assessments)")}
+        if "result_json" not in assessments:
+            conn.execute("ALTER TABLE risk_assessments ADD COLUMN result_json TEXT")
+        sessions = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+        if "expires_at" not in sessions:
+            conn.execute("ALTER TABLE sessions ADD COLUMN expires_at TEXT")
+        conn.commit()
 
     def _exec_script(self, conn: Any, script: str) -> None:
         for stmt in script.split(";"):
@@ -672,26 +707,52 @@ class RiskStore:
 
     def create_session(self, user_id: str) -> str:
         import secrets
+        from datetime import timedelta
+
+        from risk.passwords import hash_token
 
         token = secrets.token_hex(24)
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone.utc)
+        ttl = int(os.getenv("SENTINALPAY_SESSION_TTL_SECONDS", "43200") or 43200)
+        expires = (now + timedelta(seconds=max(1, ttl))).isoformat()
         with _LOCK, self._connect() as conn:
             conn.execute(
-                "INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)",
-                (token, user_id, now),
+                "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+                (hash_token(token), user_id, now.isoformat(), expires),
             )
             conn.commit()
         return token
 
     def session_user(self, token: str) -> str | None:
+        from risk.passwords import hash_token
+
+        if not token:
+            return None
+        digest = hash_token(token)
+        now = datetime.now(timezone.utc)
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT user_id FROM sessions WHERE token = ?",
-                (token,),
+                "SELECT user_id, expires_at FROM sessions WHERE token = ?",
+                (digest,),
             ).fetchone()
         if row is None:
             return None
+        expires_raw = row["expires_at"] if not isinstance(row, tuple) else row[1]
+        if expires_raw:
+            expires = datetime.fromisoformat(str(expires_raw))
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            if now > expires:
+                return None
         return row["user_id"] if not isinstance(row, tuple) else row[0]
+
+    def revoke_sessions(self, user_id: str) -> None:
+        with _LOCK, self._connect() as conn:
+            conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            conn.commit()
+
+    def record_login_failure(self, key: str) -> int:
+        return self.cache.add(f"loginfail:{key}", datetime.now(timezone.utc).timestamp(), 300.0)
 
     def update_result_json(self, transaction_id: str, result: dict[str, Any]) -> None:
         with _LOCK, self._connect() as conn:
@@ -725,8 +786,11 @@ class RiskStore:
             ).fetchone()
             if existing:
                 return dict(existing)
+            from risk.passwords import hash_token
+
             challenge_id = secrets.token_hex(16)
             expires = (now + timedelta(seconds=ttl_seconds)).isoformat()
+            session_ref = hash_token(session_token) if session_token else None
             conn.execute(
                 """
                 INSERT INTO challenges (
@@ -734,7 +798,7 @@ class RiskStore:
                     created_at, expires_at, attempts, max_attempts, consumed_at
                 ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, NULL)
                 """,
-                (challenge_id, user_id, session_token, transaction_id, now.isoformat(), expires, max_attempts),
+                (challenge_id, user_id, session_ref, transaction_id, now.isoformat(), expires, max_attempts),
             )
             conn.commit()
             row = conn.execute(
@@ -771,8 +835,12 @@ class RiskStore:
             if data["user_id"] != user_id:
                 return {"ok": False, "error": "user_mismatch"}
             stored_session = data.get("session_token")
-            if stored_session and session_token != stored_session:
-                return {"ok": False, "error": "session_mismatch"}
+            if stored_session:
+                from risk.passwords import hash_token
+
+                presented = hash_token(session_token) if session_token else ""
+                if not session_token or not hmac.compare_digest(str(stored_session), presented):
+                    return {"ok": False, "error": "session_mismatch"}
             if data.get("consumed_at"):
                 return {"ok": False, "error": "replay"}
             expires = datetime.fromisoformat(str(data["expires_at"]))
@@ -813,6 +881,95 @@ class RiskStore:
             "sandbox": True,
             "note": "Sandbox PIN confirmation, not bank OTP",
         }
+
+    def get_payment_event(self, event_id: str) -> dict[str, Any] | None:
+        if not event_id:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM payment_events WHERE event_id = ?",
+                (event_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def insert_payment_event(
+        self,
+        *,
+        event_id: str,
+        payment_id: str,
+        status: str,
+        provider_created_at: int,
+        payload_hash: str,
+        ignored: bool = False,
+    ) -> bool:
+        now = datetime.now(timezone.utc).isoformat()
+        with _LOCK, self._connect() as conn:
+            claimed = conn.execute(
+                """
+                INSERT OR IGNORE INTO payment_events (
+                    event_id, payment_id, status, provider_created_at, payload_hash, received_at, ignored
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (event_id, payment_id, status, int(provider_created_at), payload_hash, now, 1 if ignored else 0),
+            )
+            if self._pg:
+                inserted = int(getattr(claimed, "rowcount", 0) or 0)
+            else:
+                changes = conn.execute("SELECT changes() AS n").fetchone()
+                inserted = int(changes["n"] if changes is not None else 0)
+            conn.commit()
+        return inserted > 0
+
+    def latest_payment_created(self, payment_id: str) -> int:
+        if not payment_id:
+            return 0
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT latest_created_at FROM provider_payments WHERE payment_id = ?",
+                (payment_id,),
+            ).fetchone()
+        if row is None:
+            return 0
+        return int(row["latest_created_at"] if not isinstance(row, tuple) else row[0] or 0)
+
+    def upsert_provider_payment(
+        self,
+        *,
+        payment_id: str,
+        status: str,
+        amount: float,
+        currency: str,
+        order_id: str | None,
+        latest_created_at: int,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with _LOCK, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO provider_payments (
+                    payment_id, status, amount, currency, order_id, latest_created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(payment_id) DO UPDATE SET
+                    status = excluded.status,
+                    amount = excluded.amount,
+                    currency = excluded.currency,
+                    order_id = excluded.order_id,
+                    latest_created_at = excluded.latest_created_at,
+                    updated_at = excluded.updated_at
+                """,
+                (payment_id, status, amount, currency, order_id, int(latest_created_at), now),
+            )
+            conn.commit()
+
+    def get_provider_payment(self, payment_id: str) -> dict[str, Any] | None:
+        if not payment_id:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM provider_payments WHERE payment_id = ?",
+                (payment_id,),
+            ).fetchone()
+        return dict(row) if row else None
 
     def pending_reviews(self) -> list[dict[str, Any]]:
         with self._connect() as conn:

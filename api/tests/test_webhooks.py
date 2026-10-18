@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import time
 
 from fastapi.testclient import TestClient
 
@@ -28,7 +29,7 @@ def test_webhook_valid_sig_accepted(monkeypatch) -> None:
     monkeypatch.setattr(adapter, "webhook_secret", "whsec")
     payload = {
         "id": "evt_http_1",
-        "created_at": 50,
+        "created_at": int(time.time()),
         "payload": {
             "payment": {
                 "entity": {
@@ -36,7 +37,7 @@ def test_webhook_valid_sig_accepted(monkeypatch) -> None:
                     "amount": 100,
                     "currency": "INR",
                     "status": "captured",
-                    "created_at": 50,
+                    "created_at": int(time.time()),
                 }
             }
         },

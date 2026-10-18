@@ -32,7 +32,15 @@ from api.graphql import graphql_router
 from api.v1 import router as v1_router
 from detection.privacy import mask_identifier
 from payments.razorpay import RazorpayConfigError, get_razorpay_adapter
-from risk.auth import bearer_token, require_login, require_session
+from risk.auth import (
+    assert_login_not_locked,
+    bearer_token,
+    login_throttle_key,
+    note_login_failure,
+    require_login,
+    require_order_auth,
+    require_session,
+)
 from risk.ml_layer import model_status
 from risk.pipeline import PipelineError, evaluate_transaction
 from risk.store import get_store
@@ -368,12 +376,16 @@ def health() -> HealthResponse:
 
 
 @app.post("/login")
-def login(payload: LoginRequest) -> dict[str, Any]:
+def login(payload: LoginRequest, request: Request) -> dict[str, Any]:
     store = get_store()
-    if not store.verify_login(payload.user_id.strip(), payload.password):
+    user_id = payload.user_id.strip()
+    throttle = login_throttle_key(user_id, request)
+    assert_login_not_locked(store, throttle)
+    if not store.verify_login(user_id, payload.password):
+        note_login_failure(store, throttle)
         raise HTTPException(status_code=401, detail="invalid credentials")
-    token = store.create_session(payload.user_id.strip())
-    return {"token": token, "user_id": payload.user_id.strip()}
+    token = store.create_session(user_id)
+    return {"token": token, "user_id": user_id}
 
 
 @app.post("/pin/verify")
@@ -381,11 +393,15 @@ def verify_pin(payload: PinRequest, request: Request) -> dict[str, Any]:
     store = get_store()
     token = bearer_token(request)
     if payload.challenge_id:
-        challenge = store.get_challenge(payload.challenge_id.strip())
-        if challenge is None:
-            raise HTTPException(status_code=401, detail="unknown_challenge")
-        session_user = store.session_user(token) if token else None
-        user_id = session_user or str(challenge["user_id"])
+        if require_login():
+            user_id = require_session(request)
+            token = bearer_token(request)
+        else:
+            challenge = store.get_challenge(payload.challenge_id.strip())
+            if challenge is None:
+                raise HTTPException(status_code=401, detail="unknown_challenge")
+            session_user = store.session_user(token) if token else None
+            user_id = session_user or str(challenge["user_id"])
         outcome = store.verify_challenge(
             payload.challenge_id.strip(),
             user_id=user_id,
@@ -446,6 +462,7 @@ async def razorpay_webhook(request: Request) -> dict[str, Any]:
         body=body,
         signature=request.headers.get("X-Razorpay-Signature"),
         headers={k: v for k, v in request.headers.items()},
+        ledger=get_store(),
     )
     if not outcome.get("accepted"):
         raise HTTPException(status_code=401, detail=str(outcome.get("error") or "rejected"))
@@ -453,7 +470,8 @@ async def razorpay_webhook(request: Request) -> dict[str, Any]:
 
 
 @app.post("/payments/razorpay/orders")
-def razorpay_order(payload: dict[str, Any]) -> dict[str, Any]:
+def razorpay_order(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    require_order_auth(request)
     adapter = get_razorpay_adapter()
     try:
         ref = adapter.create_or_reference(
@@ -475,8 +493,10 @@ def razorpay_order(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @app.get("/transactions", response_model=TransactionFeed, response_class=PrettyJSONResponse)
-def transactions(limit: int = Query(default=50, ge=1, le=200)) -> TransactionFeed:
+def transactions(request: Request, limit: int = Query(default=50, ge=1, le=200)) -> TransactionFeed:
     """Newest-first sandbox desk feed. Nested so payment, decision, and models stay distinct."""
+    if require_login():
+        require_session(request)
     cap = min(limit, max(10, int(os.getenv("SENTINALPAY_FEED_MAX", "100"))))
     items = [_feed_item(row) for row in get_store().recent_evaluations(cap)]
     return TransactionFeed(count=len(items), items=items)

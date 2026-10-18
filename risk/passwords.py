@@ -16,6 +16,11 @@ def hash_secret(secret: str, salt: str | None = None) -> str:
     return f"{salt}${digest.hex()}"
 
 
+def hash_token(token: str) -> str:
+    """SHA-256 hex of a bearer/session token. Lookup key only — not a password hash."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
 def verify_secret(secret: str, stored: str) -> bool:
     if not stored or "$" not in stored:
         return False

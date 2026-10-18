@@ -14,7 +14,14 @@ from strawberry.types import Info
 
 from api.compat import legacy_fields_from_canonical, pipeline_payload_from_score
 from detection.privacy import mask_identifier
-from risk.auth import bearer_token, require_login, require_session
+from risk.auth import (
+    assert_login_not_locked,
+    bearer_token,
+    login_throttle_key,
+    note_login_failure,
+    require_login,
+    require_session,
+)
 from risk.ml_layer import model_status
 from risk.pipeline import PipelineError
 from risk.pipeline import evaluate_transaction as run_pipeline
@@ -154,7 +161,7 @@ def _enforce_txn_user(info: Info, user_id: str) -> None:
         raise ValueError("user mismatch")
 
 
-def _score_payload(result: dict[str, Any]) -> ScorePayload:
+def _score_payload(result: dict[str, Any], *, public: bool = False) -> ScorePayload:
     fields = legacy_fields_from_canonical(result)
     hits = [FeatureHit(name=item["name"], value=float(item["value"])) for item in fields["contributions"]]
     return ScorePayload(
@@ -176,9 +183,9 @@ def _score_payload(result: dict[str, Any]) -> ScorePayload:
         canonical_risk_score=fields["canonical_risk_score"],
         action=fields.get("action"),
         ml_available=fields.get("ml_available"),
-        challenge_id=result.get("challenge_id"),
-        challenge_kind=result.get("challenge_kind"),
-        challenge_note=result.get("challenge_note"),
+        challenge_id=None if public else result.get("challenge_id"),
+        challenge_kind=None if public else result.get("challenge_kind"),
+        challenge_note=None if public else result.get("challenge_note"),
         model_probability=result.get("model_probability"),
         reason_codes=list(result.get("reason_codes") or []),
         policy_version=result.get("policy_version"),
@@ -199,7 +206,9 @@ class Query:
         )
 
     @strawberry.field
-    def transactions(self, limit: int = 50) -> list[ScorePayload]:
+    def transactions(self, info: Info, limit: int = 50) -> list[ScorePayload]:
+        if require_login():
+            _session_user(info)
         rows = get_store().recent_evaluations(min(max(limit, 1), 200))
         out: list[ScorePayload] = []
         for row in rows:
@@ -217,19 +226,26 @@ class Query:
                     "risk_score": row.get("risk_score") or 0,
                     "decision": row.get("decision") or "REVIEW",
                 }
-            out.append(_score_payload(result))
+            out.append(_score_payload(result, public=True))
         return out
 
 
 @strawberry.type
 class Mutation:
     @strawberry.mutation
-    def login(self, user_id: str, password: str) -> LoginPayload:
+    def login(self, info: Info, user_id: str, password: str) -> LoginPayload:
         store = get_store()
-        if not store.verify_login(user_id.strip(), password):
+        ident = user_id.strip()
+        throttle = login_throttle_key(ident, _request(info))
+        try:
+            assert_login_not_locked(store, throttle)
+        except HTTPException as exc:
+            raise ValueError(exc.detail) from exc
+        if not store.verify_login(ident, password):
+            note_login_failure(store, throttle)
             raise ValueError("invalid credentials")
-        token = store.create_session(user_id.strip())
-        return LoginPayload(token=token, user_id=user_id.strip())
+        token = store.create_session(ident)
+        return LoginPayload(token=token, user_id=ident)
 
     @strawberry.mutation
     def verify_pin(self, info: Info, pin: str, challenge_id: Optional[str] = None) -> PinPayload:
@@ -237,11 +253,15 @@ class Mutation:
         store = get_store()
         token = bearer_token(request)
         if challenge_id:
-            challenge = store.get_challenge(challenge_id.strip())
-            if challenge is None:
-                raise ValueError("unknown_challenge")
-            session_user = store.session_user(token) if token else None
-            user_id = session_user or str(challenge["user_id"])
+            if require_login():
+                user_id = _session_user(info)
+                token = bearer_token(request)
+            else:
+                challenge = store.get_challenge(challenge_id.strip())
+                if challenge is None:
+                    raise ValueError("unknown_challenge")
+                session_user = store.session_user(token) if token else None
+                user_id = session_user or str(challenge["user_id"])
             outcome = store.verify_challenge(
                 challenge_id.strip(),
                 user_id=user_id,

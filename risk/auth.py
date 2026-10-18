@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import hmac
 import os
+import time
 
 from fastapi import HTTPException, Request
+
+_LOGIN_WINDOW_S = 300.0
+_LOGIN_MAX_FAILURES = 8
 
 
 def authenticate_request(request: Request) -> str:
@@ -40,3 +44,30 @@ def require_session(request: Request) -> str:
     if not user_id:
         raise HTTPException(status_code=401, detail="invalid session")
     return user_id
+
+
+def login_throttle_key(user_id: str, request: Request) -> str:
+    host = request.client.host if request.client else "local"
+    return f"{user_id.strip().lower()}|{host}"
+
+
+def assert_login_not_locked(store: object, key: str) -> None:
+    count = store.cache.count(f"loginfail:{key}", time.time(), _LOGIN_WINDOW_S)  # type: ignore[attr-defined]
+    if count >= _LOGIN_MAX_FAILURES:
+        raise HTTPException(status_code=429, detail="too many login attempts")
+
+
+def note_login_failure(store: object, key: str) -> None:
+    store.cache.add(f"loginfail:{key}", time.time(), _LOGIN_WINDOW_S)  # type: ignore[attr-defined]
+
+
+def require_order_auth(request: Request) -> None:
+    """Creating provider orders is never anonymous."""
+    expected = os.getenv("SENTINALPAY_API_KEY", "").strip()
+    if expected:
+        authenticate_request(request)
+        return
+    if require_login():
+        require_session(request)
+        return
+    raise HTTPException(status_code=401, detail="order creation requires login or SENTINALPAY_API_KEY")

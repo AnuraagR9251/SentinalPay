@@ -12,14 +12,15 @@ SentinalPay is a CSE7102 sandbox. It scores simulated UPI-like payments. It is n
 ## Controls that are implemented
 
 - Config via environment variables. `.env` is gitignored. `.env.example` has placeholders only.
-- Optional API key (`SENTINALPAY_API_KEY`) and optional login (`SENTINALPAY_REQUIRE_LOGIN`).
+- Optional API key (`SENTINALPAY_API_KEY`) and optional login (`SENTINALPAY_REQUIRE_LOGIN`). Open scoring is demo-only; set `SENTINALPAY_REQUIRE_LOGIN=1` before any gateway keys.
+- Sessions are stored as SHA-256 hashes with `expires_at` (default 12h). Login failures are rate-limited per user+IP.
 - Demo password/PIN hashes (PBKDF2) in SQLite. Demo login `aarav@senitenial` / `demo123` / PIN `1234` is sandbox only.
 - Parameterized SQL in `risk.store` (SQLite default; Postgres if `SENTINALPAY_DATABASE_URL` is set).
 - Per-client request rate notes in `risk.security` (in-process or Redis).
 - Idempotent persist on `transaction_id`.
 - Model load failures use a 0.5 prior and demote ALLOW → REVIEW. The prior is never returned as `model_probability`.
 - STEP_UP challenges: short-lived, attempt-capped, replay-protected, labeled sandbox PIN (not bank OTP).
-- Razorpay TEST webhooks: HMAC-SHA256. Browser redirects are never treated as paid.
+- Razorpay TEST webhooks: HMAC-SHA256, unique `event_id`, signed body hashed, persisted in SQLite, stale/future events rejected. Browser redirects are never treated as paid. Order creation requires login or an API key. Challenge IDs are omitted from the public feed.
 
 ## Fail-open vs fail-closed
 
