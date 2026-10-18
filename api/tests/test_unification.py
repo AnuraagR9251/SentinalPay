@@ -136,3 +136,50 @@ def test_history_is_shared_across_entrypoints() -> None:
     names = {item["rule"] for item in second.json()["rules"]["triggered_rules"]}
     assert "NEW_MERCHANT" in names
     assert get_store().count_transactions("USR_HIST") == 2
+
+
+def test_reused_transaction_id_with_new_amount_is_409() -> None:
+    client = TestClient(app)
+    first = client.post(
+        "/api/v1/transactions/evaluate",
+        json={
+            "transaction_id": "TXN_CONFLICT_1",
+            "user_id": "USR_CONFLICT",
+            "amount": 500.0,
+            "currency": "INR",
+            "merchant_id": "shop@oksbi",
+            "merchant_category": "dining",
+            "timestamp": "2026-09-28T11:00:00+00:00",
+        },
+    )
+    assert first.status_code == 200
+    original = first.json()
+    conflicted = client.post(
+        "/api/v1/transactions/evaluate",
+        json={
+            "transaction_id": "TXN_CONFLICT_1",
+            "user_id": "USR_CONFLICT",
+            "amount": 1500.0,
+            "currency": "INR",
+            "merchant_id": "shop@oksbi",
+            "merchant_category": "dining",
+            "timestamp": "2026-09-28T11:00:00+00:00",
+        },
+    )
+    assert conflicted.status_code == 409
+    assert "different payment details" in conflicted.json()["detail"]
+    assert "risk_score" not in conflicted.json()
+    replay = client.post(
+        "/score",
+        json={
+            "transaction_id": "TXN_CONFLICT_1",
+            "amount": 500.0,
+            "payee_vpa": "shop@oksbi",
+            "user_id": "USR_CONFLICT",
+            "timestamp": "2026-09-28T11:00:00+00:00",
+            "is_new_payee": False,
+            "purpose": "dining",
+        },
+    )
+    assert replay.status_code == 200
+    assert replay.json()["canonical_risk_score"] == original["risk_score"]

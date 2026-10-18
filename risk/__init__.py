@@ -1,3 +1,3 @@
-from risk.pipeline import PipelineError, evaluate_transaction
+from risk.pipeline import ConflictError, PipelineError, evaluate_transaction
 
-__all__ = ["PipelineError", "evaluate_transaction"]
+__all__ = ["ConflictError", "PipelineError", "evaluate_transaction"]

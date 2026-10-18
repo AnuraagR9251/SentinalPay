@@ -21,6 +21,8 @@ from datetime import datetime
 from math import isfinite
 from typing import Any
 
+from contextlib import asynccontextmanager
+
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,12 +39,13 @@ from risk.auth import (
     bearer_token,
     login_throttle_key,
     note_login_failure,
+    open_access_warning,
     require_login,
     require_order_auth,
     require_session,
 )
 from risk.ml_layer import model_status
-from risk.pipeline import PipelineError, evaluate_transaction
+from risk.pipeline import PipelineError, evaluate_transaction, http_status_for_pipeline_error
 from risk.store import get_store
 
 load_dotenv()
@@ -203,6 +206,8 @@ class HealthResponse(BaseModel):
     model_version: str | None = None
     ml_fallback: str | None = None
     load_error: str | None = None
+    open_sandbox: bool = False
+    auth_warning: str | None = None
 
 
 class LoginRequest(BaseModel):
@@ -220,7 +225,15 @@ def _cors_origins() -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
-app = FastAPI(title="SentinalPay Scoring API", version="1.0.0")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    note = open_access_warning()
+    if note:
+        logger.warning(note)
+    yield
+
+
+app = FastAPI(title="SentinalPay Scoring API", version="1.0.0", lifespan=lifespan)
 app.include_router(v1_router)
 app.include_router(graphql_router, prefix="")
 app.add_middleware(
@@ -365,6 +378,8 @@ def health() -> HealthResponse:
             model_version="error",
             ml_fallback="conservative_prior_0.5; ALLOW demoted to REVIEW",
             load_error="status_error",
+            open_sandbox=not require_login(),
+            auth_warning=open_access_warning(),
         )
     return HealthResponse(
         status="ok",
@@ -372,6 +387,8 @@ def health() -> HealthResponse:
         model_version=status["model_version"],
         ml_fallback=status["ml_fallback"],
         load_error=status.get("load_error"),
+        open_sandbox=not require_login(),
+        auth_warning=open_access_warning(),
     )
 
 
@@ -430,7 +447,7 @@ def score(payload: ScoreRequest, request: Request) -> ScoreResponse:
             session_token=bearer_token(request),
         )
     except PipelineError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=http_status_for_pipeline_error(exc), detail=str(exc)) from exc
     fields = legacy_fields_from_canonical(result)
     logger.info(
         "transaction_id=%s account=%s canonical=%s legacy=%s score=%s",

@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from payments.protocol import redirect_is_not_success
 from payments.razorpay import RazorpayConfigError, RazorpayTestAdapter
@@ -96,3 +97,44 @@ def test_create_without_keys_does_not_call_network() -> None:
     except RazorpayConfigError:
         return
     raise AssertionError("expected RazorpayConfigError")
+
+
+def test_header_event_id_is_used_when_payload_id_missing() -> None:
+    adapter = RazorpayTestAdapter(webhook_secret="whsec")
+    payload = _payment_event("", "pay_h1", "captured", int(time.time()))
+    payload["id"] = ""
+    body, sig = _signed("whsec", payload)
+    out = adapter.ingest_event(
+        body=body,
+        signature=sig,
+        headers={"X-Razorpay-Event-Id": "evt_header_1"},
+    )
+    assert out["accepted"] is True
+    assert out["event_id"] == "evt_header_1"
+    again = adapter.ingest_event(
+        body=body,
+        signature=sig,
+        headers={"X-Razorpay-Event-Id": "evt_header_1"},
+    )
+    assert again["duplicate"] is True
+
+
+def test_concurrent_duplicate_ledger_events(tmp_path) -> None:
+    from risk.store import RiskStore
+
+    store = RiskStore(tmp_path / "pay_race.db", seed_demo=False)
+    adapter = RazorpayTestAdapter(webhook_secret="whsec")
+    now = int(time.time())
+    body, sig = _signed("whsec", _payment_event("evt_race", "pay_race", "captured", now))
+
+    def _run() -> dict:
+        return adapter.ingest_event(body=body, signature=sig, headers={}, ledger=store)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = [fut.result() for fut in as_completed([pool.submit(_run) for _ in range(8)])]
+
+    applied = [item for item in results if item.get("duplicate") is False and item.get("accepted")]
+    duplicates = [item for item in results if item.get("duplicate") is True]
+    assert len(applied) == 1
+    assert len(duplicates) == 7
+    assert adapter.fetch_status("pay_race", ledger=store).status == "captured"

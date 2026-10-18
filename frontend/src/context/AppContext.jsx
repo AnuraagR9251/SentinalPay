@@ -265,6 +265,12 @@ export const AppProvider = ({ children }) => {
 
     setTransactions(prev => [newTx, ...prev]);
 
+    if (recipient?.billId) {
+      setBills((prev) => prev.map((bill) => (
+        bill.id === recipient.billId ? { ...bill, status: "Paid" } : bill
+      )));
+    }
+
     // Random scratch card reward generation for transactions over ₹50
     let awardedReward = null;
     if (numAmount >= 50 && Math.random() > 0.25) {
@@ -450,14 +456,12 @@ export const AppProvider = ({ children }) => {
         name: targetBill.billerName,
         upiId: `${targetBill.category.toLowerCase()}@billpay`,
         avatar: null,
-        isBill: true
+        isBill: true,
+        billId: targetBill.id
       },
       targetBill.amountDue,
       `Utility Bill - ${targetBill.category}`
     );
-
-    // After payment modal closes and succeeds, update bill status
-    setBills(prev => prev.map(b => b.id === billId ? { ...b, status: "Paid" } : b));
   };
 
   // Add bank account
@@ -550,7 +554,7 @@ export const AppProvider = ({ children }) => {
       grocery: { ...base, transaction_id: `lab-groc-${Date.now()}`, amount: 240, payee_vpa: 'kirana.lab@oksbi', purpose: 'groceries' },
       new_payee: { ...base, transaction_id: `lab-new-${Date.now()}`, amount: 48000, payee_vpa: `stranger.${Date.now()}@oksbi`, purpose: 'p2p_transfer' },
       velocity: { ...base, transaction_id: `lab-vel-${Date.now()}`, amount: 900, payee_vpa: 'burst.lab@oksbi', purpose: 'p2p_transfer' },
-      replay: { ...base, transaction_id: 'lab-replay-fixed', amount: 500, payee_vpa: 'replay.lab@oksbi', purpose: 'dining' }
+      replay: { ...base, transaction_id: `lab-replay-fixed-${user.upiId}`, amount: 500, payee_vpa: 'replay.lab@oksbi', purpose: 'dining' }
     };
     const body = payloads[id];
     if (!body) return;
@@ -565,37 +569,55 @@ export const AppProvider = ({ children }) => {
       isNewPayee: Boolean(item.is_new_payee),
       purpose: item.purpose
     });
-    if (id === 'velocity') {
-      for (let i = 0; i < 5; i += 1) {
-        await scoreViaGraphql(
-          toGql({ ...body, transaction_id: `lab-vel-${Date.now()}-${i}`, amount: 900 + i }),
-          authHeaders()
-        );
+    try {
+      if (id === 'velocity') {
+        for (let i = 0; i < 5; i += 1) {
+          await scoreViaGraphql(
+            toGql({ ...body, transaction_id: `lab-vel-${Date.now()}-${i}`, amount: 900 + i }),
+            authHeaders()
+          );
+        }
       }
-    }
-    const data = await scoreViaGraphql(toGql(body), authHeaders());
-    setLastScore(data);
-    setRiskGateModal({
-      isOpen: true,
-      phase: data.risk_tier === 'BLOCK' ? 'block' : data.risk_tier === 'HOLD' || data.canonical_decision === 'REVIEW' ? 'hold' : data.risk_tier === 'STEP_UP' ? 'hold' : 'scanning',
-      riskTier: data.risk_tier,
-      riskScore: data.risk_score,
-      canonicalDecision: data.canonical_decision,
-      payeeName: body.payee_vpa,
-      amount: body.amount
-    });
-    if (data.risk_tier === 'ALLOW') {
-      setRiskGateModal((prev) => ({ ...prev, isOpen: false, phase: 'idle' }));
-    }
-    if (data.risk_tier === 'STEP_UP') {
-      setRiskGateModal((prev) => ({ ...prev, isOpen: false, phase: 'idle' }));
-      setUpiPinModal({
+      const data = await scoreViaGraphql(toGql(body), authHeaders());
+      setLastScore(data);
+      const phase = data.risk_tier === 'BLOCK'
+        ? 'block'
+        : data.risk_tier === 'STEP_UP'
+          ? 'scanning'
+          : data.risk_tier === 'HOLD' || data.canonical_decision === 'REVIEW'
+            ? 'hold'
+            : 'scanning';
+      setRiskGateModal({
         isOpen: true,
-        stepUp: true,
-        amount: body.amount,
-        recipientName: body.payee_vpa,
-        purpose: 'Sentinel step-up',
-        onComplete: () => {}
+        phase,
+        riskTier: data.risk_tier,
+        riskScore: data.risk_score,
+        canonicalDecision: data.canonical_decision,
+        payeeName: body.payee_vpa,
+        amount: body.amount
+      });
+      if (data.risk_tier === 'ALLOW') {
+        setRiskGateModal((prev) => ({ ...prev, isOpen: false, phase: 'idle' }));
+      }
+      if (data.risk_tier === 'STEP_UP') {
+        setRiskGateModal((prev) => ({ ...prev, isOpen: false, phase: 'idle' }));
+        setUpiPinModal({
+          isOpen: true,
+          stepUp: true,
+          amount: body.amount,
+          recipientName: body.payee_vpa,
+          purpose: 'Sentinel step-up',
+          onComplete: () => {}
+        });
+      }
+    } catch {
+      setRiskGateModal({
+        isOpen: true,
+        phase: 'error',
+        riskTier: null,
+        riskScore: null,
+        payeeName: body.payee_vpa,
+        amount: body.amount
       });
     }
   };

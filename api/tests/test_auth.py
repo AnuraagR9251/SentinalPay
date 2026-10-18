@@ -121,3 +121,43 @@ def test_challenge_requires_session_when_login_on(monkeypatch) -> None:
     client = TestClient(app)
     denied = client.post("/pin/verify", json={"pin": "1234", "challenge_id": "nope"})
     assert denied.status_code == 401
+
+
+def test_evaluate_rejects_other_user_when_login_on(monkeypatch) -> None:
+    monkeypatch.setenv("SENTINALPAY_REQUIRE_LOGIN", "1")
+    client = TestClient(app)
+    assert client.post(
+        "/api/v1/transactions/evaluate",
+        json={"user_id": "aarav@senitenial", "amount": 200, "merchant_id": "shop@oksbi"},
+    ).status_code == 401
+    token = client.post("/login", json={"user_id": "aarav@senitenial", "password": "demo123"}).json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    mismatch = client.post(
+        "/api/v1/transactions/evaluate",
+        headers=headers,
+        json={"user_id": "priya@senitenial", "amount": 200, "merchant_id": "shop@oksbi"},
+    )
+    assert mismatch.status_code == 403
+    own = client.post(
+        "/api/v1/transactions/evaluate",
+        headers=headers,
+        json={
+            "transaction_id": "own-eval-1",
+            "user_id": "aarav@senitenial",
+            "amount": 200,
+            "merchant_id": "shop@oksbi",
+        },
+    )
+    assert own.status_code == 200
+
+
+def test_health_reports_open_sandbox(monkeypatch) -> None:
+    monkeypatch.setenv("SENTINALPAY_REQUIRE_LOGIN", "0")
+    client = TestClient(app)
+    health = client.get("/health").json()
+    assert health["open_sandbox"] is True
+    assert "sandbox" in (health.get("auth_warning") or "").lower()
+    monkeypatch.setenv("SENTINALPAY_REQUIRE_LOGIN", "1")
+    locked = client.get("/health").json()
+    assert locked["open_sandbox"] is False
+    assert locked.get("auth_warning") in (None, "")

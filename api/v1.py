@@ -9,8 +9,8 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
-from risk.auth import authenticate_request, bearer_token
-from risk.pipeline import PipelineError, evaluate_transaction
+from risk.auth import authenticate_request, bearer_token, require_login, require_session
+from risk.pipeline import PipelineError, evaluate_transaction, http_status_for_pipeline_error
 from risk.store import get_store
 
 router = APIRouter(prefix="/api/v1", tags=["risk-v1"])
@@ -53,6 +53,10 @@ class ReviewRequest(BaseModel):
 
 @router.post("/transactions/evaluate")
 def evaluate(payload: EvaluateRequest, request: Request, client_key: str = Depends(authenticate_request)) -> dict[str, Any]:
+    if require_login():
+        session_user = require_session(request)
+        if session_user != payload.user_id:
+            raise HTTPException(status_code=403, detail="user mismatch")
     try:
         result = evaluate_transaction(
             payload.model_dump(),
@@ -60,7 +64,7 @@ def evaluate(payload: EvaluateRequest, request: Request, client_key: str = Depen
             session_token=bearer_token(request),
         )
     except PipelineError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=http_status_for_pipeline_error(exc), detail=str(exc)) from exc
     return result
 
 

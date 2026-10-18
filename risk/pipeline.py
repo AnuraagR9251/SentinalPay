@@ -17,7 +17,7 @@ from risk.normalize import NormalizationError, normalize_transaction
 from risk.rules import run_rules
 from risk.security import inspect_security
 from risk.policy import policy_action
-from risk.store import RiskStore, get_store
+from risk.store import RiskStore, StoreConflictError, get_store, payment_identity
 
 # ponytail: 50 km city-corridor heuristic. Upgrade: per-user commute ellipsoid from stored fixes.
 _USUAL_RADIUS_KM = 50.0
@@ -25,6 +25,49 @@ _USUAL_RADIUS_KM = 50.0
 
 class PipelineError(ValueError):
     pass
+
+
+class ConflictError(PipelineError):
+    """Same transaction_id reused with different material payment fields."""
+
+
+_CONFLICT_MSG = "transaction_id already used with different payment details"
+
+
+def http_status_for_pipeline_error(exc: PipelineError) -> int:
+    return 409 if isinstance(exc, ConflictError) else 422
+
+
+def _replay_or_conflict(db: RiskStore, txn: NormalizedTransaction) -> dict[str, Any] | None:
+    stored = db.get_transaction(txn.transaction_id)
+    cached = db.get_result(txn.transaction_id)
+    if stored is None and cached is None:
+        return None
+    incoming = payment_identity(txn.user_id, txn.amount, txn.currency, txn.merchant_id)
+    if stored is not None:
+        existing = payment_identity(
+            stored.get("user_id"),
+            stored.get("amount"),
+            stored.get("currency"),
+            stored.get("merchant_id"),
+        )
+        if existing != incoming:
+            raise ConflictError(_CONFLICT_MSG)
+    else:
+        cached_user = str((cached or {}).get("user_id") or "")
+        if cached_user and cached_user != txn.user_id:
+            raise ConflictError(_CONFLICT_MSG)
+    if cached is None:
+        return None
+    replay = dict(cached)
+    replay["idempotent"] = True
+    security = replay.get("security")
+    if isinstance(security, dict):
+        security = dict(security)
+        security["duplicate_transaction"] = True
+        replay["security"] = security
+    replay["action"] = replay.get("action") or policy_action(replay)
+    return attach_public_envelope(replay)
 
 
 def _home_from_history(history: Sequence[dict]) -> tuple[float, float] | None:
@@ -128,17 +171,9 @@ def evaluate_transaction(
     except NormalizationError as exc:
         raise PipelineError(str(exc)) from exc
 
-    cached = db.get_result(txn.transaction_id)
-    if cached is not None:
-        replay = dict(cached)
-        replay["idempotent"] = True
-        security = replay.get("security")
-        if isinstance(security, dict):
-            security = dict(security)
-            security["duplicate_transaction"] = True
-            replay["security"] = security
-        replay["action"] = replay.get("action") or policy_action(replay)
-        return attach_public_envelope(replay)
+    replay = _replay_or_conflict(db, txn)
+    if replay is not None:
+        return replay
 
     security = inspect_security(txn, db, cfg, client_key=client_key)
     history = db.user_history(txn.user_id)
@@ -162,14 +197,15 @@ def evaluate_transaction(
         elapsed_ms=elapsed_ms,
     )
     result["action"] = policy_action(result)
-    wrote = db.persist(txn, security, rules, behavior, ml, decision, cfg.engine_version, elapsed_ms, result=result)
+    try:
+        wrote = db.persist(txn, security, rules, behavior, ml, decision, cfg.engine_version, elapsed_ms, result=result)
+    except StoreConflictError as exc:
+        raise ConflictError(str(exc) or _CONFLICT_MSG) from exc
     if wrote is False:
-        cached = db.get_result(txn.transaction_id)
-        if cached is not None:
-            replay = dict(cached)
-            replay["idempotent"] = True
-            replay["action"] = replay.get("action") or policy_action(replay)
-            return attach_public_envelope(replay)
+        replay = _replay_or_conflict(db, txn)
+        if replay is not None:
+            return replay
+        raise ConflictError(_CONFLICT_MSG)
     if result.get("action") == "STEP_UP":
         challenge = db.create_challenge(txn.user_id, txn.transaction_id, session_token)
         result["challenge_id"] = challenge["challenge_id"]

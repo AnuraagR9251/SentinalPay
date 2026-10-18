@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import os
+import threading
 import time
 from typing import Any
 from urllib.error import URLError
@@ -43,6 +44,7 @@ class RazorpayTestAdapter:
         self._events: dict[str, dict[str, Any]] = {}
         self._payments: dict[str, PaymentRef] = {}
         self._latest_created: dict[str, int] = {}
+        self._lock = threading.Lock()
 
     def configured(self) -> bool:
         return bool(self.key_id and self.key_secret)
@@ -102,14 +104,24 @@ class RazorpayTestAdapter:
         headers: dict[str, str],
         ledger: Any | None = None,
     ) -> dict[str, Any]:
-        del headers
         if not self.verify_signature(body, signature):
             return {"accepted": False, "error": "invalid_signature"}
         try:
             payload = json.loads(body.decode("utf-8"))
         except json.JSONDecodeError:
             return {"accepted": False, "error": "invalid_json"}
-        event_id = str(payload.get("id") or "").strip()
+        with self._lock:
+            return self._ingest_verified(payload, body, headers, ledger)
+
+    def _ingest_verified(
+        self,
+        payload: dict[str, Any],
+        body: bytes,
+        headers: dict[str, str],
+        ledger: Any | None,
+    ) -> dict[str, Any]:
+        # Razorpay: x-razorpay-event-id is unique per event (idempotency). Body id is fallback.
+        event_id = _webhook_event_id(headers, payload)
         if not event_id:
             return {"accepted": False, "error": "missing_event_id"}
         entity = ((payload.get("payload") or {}).get("payment") or {}).get("entity") or {}
@@ -129,50 +141,31 @@ class RazorpayTestAdapter:
         order_id = str(entity.get("order_id") or "") or None
 
         if ledger is not None:
-            prior = ledger.get_payment_event(event_id)
-            if prior:
-                return {
-                    "accepted": True,
-                    "duplicate": True,
-                    "event_id": event_id,
-                    "status": prior.get("status"),
-                }
-            prior_created = ledger.latest_payment_created(payment_id) if payment_id else 0
-            ignored = bool(payment_id and created < prior_created)
-            inserted = ledger.insert_payment_event(
+            claimed = ledger.claim_payment_event(
                 event_id=event_id,
                 payment_id=payment_id,
                 status=status,
                 provider_created_at=created,
                 payload_hash=payload_hash,
-                ignored=ignored,
+                amount=amount,
+                currency=currency,
+                order_id=order_id,
             )
-            if not inserted:
-                prior = ledger.get_payment_event(event_id) or {}
+            if claimed.get("duplicate"):
                 return {
                     "accepted": True,
                     "duplicate": True,
                     "event_id": event_id,
-                    "status": prior.get("status"),
+                    "status": claimed.get("status"),
                 }
-            if ignored:
-                current = ledger.get_provider_payment(payment_id) or {}
+            if claimed.get("out_of_order"):
                 return {
                     "accepted": True,
                     "out_of_order": True,
                     "event_id": event_id,
-                    "status": current.get("status") or "unknown",
+                    "status": claimed.get("status") or "unknown",
                     "note": "older event ignored",
                 }
-            if payment_id:
-                ledger.upsert_provider_payment(
-                    payment_id=payment_id,
-                    status=status,
-                    amount=amount,
-                    currency=currency,
-                    order_id=order_id,
-                    latest_created_at=created,
-                )
         else:
             prior = self._events.get(event_id)
             if prior:
@@ -256,6 +249,15 @@ class RazorpayTestAdapter:
 
     def from_redirect(self, query: dict[str, Any] | None = None) -> dict[str, Any]:
         return redirect_is_not_success(query)
+
+
+def _webhook_event_id(headers: dict[str, str] | None, payload: dict[str, Any]) -> str:
+    for key, value in (headers or {}).items():
+        if str(key).lower() == "x-razorpay-event-id":
+            token = str(value or "").strip()
+            if token:
+                return token
+    return str(payload.get("id") or "").strip()
 
 
 def _basic(key_id: str, key_secret: str) -> str:

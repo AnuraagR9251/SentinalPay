@@ -62,7 +62,13 @@ Razorpay TEST mode is advisory. This service cannot veto authorization. A browse
 
 Training eval is **synthetic PaySim** (chrono 60/20/20, vs rules + logistic regression, precision-recall / review catch vs extra reviews). No labeled UPI holdout was available. Drain/CASH_OUT flags are not ML features.
 
-If the XGBoost file is missing, the engine does **not** treat ML as 0. It uses a conservative prior of 0.5 (40% layer → 20 points) and will not return ALLOW. `GET /health` reports `model_loaded` and `ml_fallback`.
+If the XGBoost file is missing, the engine does **not** treat ML as 0. It uses a conservative prior of 0.5 (40% layer → 20 points) and will not return ALLOW. `GET /health` reports `model_loaded`, `ml_fallback`, `open_sandbox`, and `auth_warning`. Default `SENTINALPAY_REQUIRE_LOGIN=0` is an open local sandbox; an API key is not end-user authentication. Set `SENTINALPAY_REQUIRE_LOGIN=1` to bind REST and GraphQL score/evaluate to the session user.
+
+Identical retries with the same `transaction_id` and the same user/amount/currency/merchant return the stored result (one audit row). Reusing that ID with different material fields is HTTP 409 and does not leak the original score.
+
+Utility bills stay unpaid until sandbox payment completion (ALLOW, or STEP_UP after PIN). Opening the payment modal, HOLD, BLOCK, cancel, or a failed score does not mark a bill Paid.
+
+Razorpay TEST webhooks verify the raw body HMAC and dedupe on `X-Razorpay-Event-Id` (payload `id` if the header is absent). Duplicate or older events do not rewind payment state.
 
 `P_ae`, `P_graph`, and `structuring_flag` on `/score` are unused live components (`null` + `ae_available: false`). They are not AE/graph inference.
 
@@ -98,13 +104,13 @@ py -3 -m streamlit run dashboard/app.py
 
 The desk polls `GET /transactions` only. It does not switch to the unused `SimulatedStream`. React balances, UTRs, and rewards are local sandbox values — ALLOW is not a bank settlement.
 
-Retrain the model after changing features:
+Retrain the model after changing features **only if the PaySim CSV is already on disk** (not committed; can be hundreds of MB):
 
 ```bash
-py -3 -m ml.train_xgboost
+py -3 ml/train_xgboost.py
 ```
 
-Writes `ml/models/xgboost_model.pkl` and `ml/models/xgboost_metrics.json` (synthetic-data evaluation).
+Writes `ml/models/xgboost_model.pkl` and `ml/models/xgboost_metrics.json` (synthetic-data evaluation). Those artefacts are gitignored.
 
 ## Tests
 

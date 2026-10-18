@@ -26,6 +26,22 @@ def require_login() -> bool:
     return os.getenv("SENTINALPAY_REQUIRE_LOGIN", "").strip() in {"1", "true", "yes"}
 
 
+def open_access_warning() -> str | None:
+    """Local demo may leave scoring open. An API key is not production user auth."""
+    if require_login():
+        return None
+    key = os.getenv("SENTINALPAY_API_KEY", "").strip()
+    if key:
+        return (
+            "SENTINALPAY_REQUIRE_LOGIN=0: scoring is not bound to a user session. "
+            "SENTINALPAY_API_KEY gates the process, it is not end-user authentication."
+        )
+    return (
+        "SENTINALPAY_REQUIRE_LOGIN=0 and SENTINALPAY_API_KEY is empty: "
+        "score/evaluate are open local sandbox only. Not production authentication."
+    )
+
+
 def bearer_token(request: Request) -> str | None:
     header = (request.headers.get("Authorization") or "").strip()
     if header.lower().startswith("bearer "):

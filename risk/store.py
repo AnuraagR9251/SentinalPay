@@ -31,6 +31,20 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 _LOCK = threading.Lock()
 
 
+class StoreConflictError(ValueError):
+    """transaction_id already claimed with different material fields."""
+
+
+def payment_identity(user_id: Any, amount: Any, currency: Any, merchant_id: Any) -> tuple[str, str, str, str]:
+    """Deterministic payment key. No PAN/PIN/credentials — identity fields only."""
+    return (
+        str(user_id or ""),
+        f"{round(float(amount or 0), 2):.2f}",
+        (str(currency or "INR").strip().upper() or "INR"),
+        str(merchant_id or ""),
+    )
+
+
 class _PostgresConn:
     """psycopg connection with SQLite-style ? placeholders."""
 
@@ -386,6 +400,14 @@ class RiskStore:
             "confidence": float(row["confidence"]),
         }
 
+    def get_transaction(self, transaction_id: str) -> Optional[dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM transactions WHERE transaction_id = ?",
+                (transaction_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
     def count_transactions(self, user_id: str | None = None) -> int:
         with self._connect() as conn:
             if user_id:
@@ -478,6 +500,24 @@ class RiskStore:
             [{"feature": a.feature, "severity": a.severity, "deviation": a.deviation} for a in behavior.anomalies]
         )
         with _LOCK, self._connect() as conn:
+            existing = conn.execute(
+                """
+                SELECT user_id, amount, currency, merchant_id
+                FROM transactions WHERE transaction_id = ?
+                """,
+                (txn.transaction_id,),
+            ).fetchone()
+            if existing is not None:
+                prior = dict(existing)
+                if payment_identity(
+                    prior.get("user_id"),
+                    prior.get("amount"),
+                    prior.get("currency"),
+                    prior.get("merchant_id"),
+                ) != payment_identity(txn.user_id, txn.amount, txn.currency, txn.merchant_id):
+                    raise StoreConflictError(
+                        "transaction_id already used with different payment details"
+                    )
             conn.execute(
                 "INSERT OR IGNORE INTO users (user_id, first_seen) VALUES (?, ?)",
                 (txn.user_id, now),
@@ -919,6 +959,95 @@ class RiskStore:
                 inserted = int(changes["n"] if changes is not None else 0)
             conn.commit()
         return inserted > 0
+
+    def claim_payment_event(
+        self,
+        *,
+        event_id: str,
+        payment_id: str,
+        status: str,
+        provider_created_at: int,
+        payload_hash: str,
+        amount: float,
+        currency: str,
+        order_id: str | None,
+    ) -> dict[str, Any]:
+        """Atomically claim a provider event and apply payment state if it is newest."""
+        now = datetime.now(timezone.utc).isoformat()
+        created = int(provider_created_at)
+        with _LOCK, self._connect() as conn:
+            claimed = conn.execute(
+                """
+                INSERT OR IGNORE INTO payment_events (
+                    event_id, payment_id, status, provider_created_at, payload_hash, received_at, ignored
+                ) VALUES (?, ?, ?, ?, ?, ?, 0)
+                """,
+                (event_id, payment_id, status, created, payload_hash, now),
+            )
+            if self._pg:
+                inserted = int(getattr(claimed, "rowcount", 0) or 0)
+            else:
+                changes = conn.execute("SELECT changes() AS n").fetchone()
+                inserted = int(changes["n"] if changes is not None else 0)
+            if inserted <= 0:
+                row = conn.execute(
+                    "SELECT * FROM payment_events WHERE event_id = ?",
+                    (event_id,),
+                ).fetchone()
+                conn.commit()
+                prior = dict(row) if row else {}
+                return {
+                    "duplicate": True,
+                    "out_of_order": False,
+                    "status": prior.get("status"),
+                    "event_id": event_id,
+                }
+            latest = 0
+            current: dict[str, Any] = {}
+            if payment_id:
+                pay = conn.execute(
+                    "SELECT * FROM provider_payments WHERE payment_id = ?",
+                    (payment_id,),
+                ).fetchone()
+                if pay is not None:
+                    current = dict(pay)
+                    latest = int(current.get("latest_created_at") or 0)
+            if payment_id and created < latest:
+                conn.execute(
+                    "UPDATE payment_events SET ignored = 1 WHERE event_id = ?",
+                    (event_id,),
+                )
+                conn.commit()
+                return {
+                    "duplicate": False,
+                    "out_of_order": True,
+                    "status": current.get("status") or "unknown",
+                    "event_id": event_id,
+                }
+            if payment_id:
+                conn.execute(
+                    """
+                    INSERT INTO provider_payments (
+                        payment_id, status, amount, currency, order_id, latest_created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(payment_id) DO UPDATE SET
+                        status = excluded.status,
+                        amount = excluded.amount,
+                        currency = excluded.currency,
+                        order_id = excluded.order_id,
+                        latest_created_at = excluded.latest_created_at,
+                        updated_at = excluded.updated_at
+                    """,
+                    (payment_id, status, amount, currency, order_id, created, now),
+                )
+            conn.commit()
+            return {
+                "duplicate": False,
+                "out_of_order": False,
+                "applied": True,
+                "status": status,
+                "event_id": event_id,
+            }
 
     def latest_payment_created(self, payment_id: str) -> int:
         if not payment_id:
