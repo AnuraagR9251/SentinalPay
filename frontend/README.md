@@ -18,7 +18,7 @@
 1. **Google Pay Action Grid**:
    - Scan any QR code, Pay contacts, Pay phone number, Bank transfer, Pay UPI ID, Self transfer, Pay bills, and Check balance.
 2. **Interactive 4-Digit UPI PIN Pad**:
-   - Masked PIN indicators, numeric keypad with tap sound, and biometric (Face ID / Fingerprint) authentication simulation.
+   - Masked PIN indicators, numeric keypad with tap sound, and a **simulated** fingerprint button (not real Face ID / Touch ID).
 3. **Celebration & Sound Engine**:
    - Ascending harmonic UPI chime synthesized directly via the browser's **Web Audio API** (no missing audio assets), accompanied by full-screen `canvas-confetti`.
    - Downloadable & printable official payment receipts with generated UTR reference numbers (`SENT...`).

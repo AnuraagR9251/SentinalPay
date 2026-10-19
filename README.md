@@ -63,7 +63,7 @@ Razorpay TEST mode is advisory. This service cannot veto authorization. A browse
 
 Training eval is **synthetic PaySim** (chrono 60/20/20, vs rules + logistic regression, precision-recall / review catch vs extra reviews). No labeled UPI holdout was available. Drain/CASH_OUT flags are not ML features.
 
-If the XGBoost file is missing, the engine does **not** treat ML as 0. It uses a conservative prior of 0.5 (40% layer → 20 points) and will not return ALLOW. `GET /health` reports `model_loaded`, `ml_fallback`, `open_sandbox`, and `auth_warning`. Default `SENTINALPAY_REQUIRE_LOGIN=0` is an open local sandbox; an API key is not end-user authentication. Set `SENTINALPAY_REQUIRE_LOGIN=1` to bind REST and GraphQL score/evaluate to the session user.
+If the XGBoost file is missing, the engine does **not** treat ML as 0. It uses a conservative prior of 0.5 (40% layer → 20 points) and will not return ALLOW. `GET /health` reports `model_loaded`, `ml_fallback`, `open_sandbox`, and `auth_warning`. Default `SENTINALPAY_REQUIRE_LOGIN=0` is an open local sandbox; an API key is not end-user authentication. When `SENTINALPAY_API_KEY` is set, REST and GraphQL score/evaluate/feed/reviews/PIN require `X-API-Key`. Set `SENTINALPAY_REQUIRE_LOGIN=1` to bind REST and GraphQL score/evaluate to the session user. HTTP 429 uses `SENTINALPAY_HTTP_RATE_LIMIT_PER_MIN` (in-process unless Redis is configured).
 
 Identical retries with the same `transaction_id` and the same user/amount/currency/merchant return the stored result (one audit row). Reusing that ID with different material fields is HTTP 409 and does not leak the original score.
 
@@ -91,7 +91,7 @@ http://127.0.0.1:8000/graphql
 
 REST `/score`, `/login`, and `/pin/verify` stay.
 
-Demo login (only if `SENTINALPAY_REQUIRE_LOGIN=1` or you call `/login`): `aarav@senitenial` / `demo123` / PIN `1234`. Sessions expire (default 12h) and are stored hashed. Set `SENTINALPAY_REQUIRE_LOGIN=1` before enabling Razorpay keys.
+Demo login (sandbox only, not a bank account): `aarav@senitenial` / `demo123` / PIN `1234`. Sessions expire (default 12h) and are stored hashed. Set `SENTINALPAY_REQUIRE_LOGIN=1` before enabling Razorpay keys. SentinalPay is not a real payment processor.
 
 Frontend: `npm run dev` in `frontend/`. Set `VITE_REQUIRE_LOGIN=1` to show the login gate.
 

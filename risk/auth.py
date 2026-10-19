@@ -5,21 +5,52 @@ from __future__ import annotations
 import hmac
 import os
 import time
+from typing import Any
 
 from fastapi import HTTPException, Request
 
 _LOGIN_WINDOW_S = 300.0
 _LOGIN_MAX_FAILURES = 8
+_PIN_WINDOW_S = 300.0
+_PIN_MAX_FAILURES = 8
+_HTTP_WINDOW_S = 60.0
 
 
 def authenticate_request(request: Request) -> str:
     expected = os.getenv("SENTINALPAY_API_KEY", "").strip()
     presented = (request.headers.get("X-API-Key") or "").strip()
     if not expected:
-        return presented or request.client.host if request.client else "local"
+        return presented or (request.client.host if request.client else "local")
     if not presented or not hmac.compare_digest(presented, expected):
         raise HTTPException(status_code=401, detail="invalid api key")
     return "key"
+
+
+def http_rate_limit_per_min() -> int:
+    raw = os.getenv("SENTINALPAY_HTTP_RATE_LIMIT_PER_MIN", "").strip()
+    if raw:
+        return max(1, int(raw))
+    return max(1, int(os.getenv("SENTINALPAY_RATE_LIMIT_PER_MIN", "40") or 40))
+
+
+def assert_http_rate_limit(client_key: str) -> None:
+    """HTTP abuse limiter. Separate from payment-velocity fraud signals.
+
+    Uses VelocityCache: Redis when SENTINALPAY_REDIS_URL connects, otherwise
+    in-process (per worker, not shared, resets on restart). Demo ceiling.
+    """
+    from risk.store import get_store
+
+    count = get_store().cache.add(f"http:{client_key}", time.time(), _HTTP_WINDOW_S)
+    if count > http_rate_limit_per_min():
+        raise HTTPException(status_code=429, detail="too many requests")
+
+
+def protect_sensitive(request: Request) -> str:
+    """API key when configured, then HTTP 429. Used by score/evaluate/feed/PIN."""
+    client_key = authenticate_request(request)
+    assert_http_rate_limit(client_key)
+    return client_key
 
 
 def require_login() -> bool:
@@ -77,13 +108,70 @@ def note_login_failure(store: object, key: str) -> None:
     store.cache.add(f"loginfail:{key}", time.time(), _LOGIN_WINDOW_S)  # type: ignore[attr-defined]
 
 
+def pin_throttle_key(user_id: str, request: Request) -> str:
+    return login_throttle_key(user_id or "unknown", request)
+
+
+def assert_pin_not_locked(store: object, key: str) -> None:
+    count = store.cache.count(f"pinfail:{key}", time.time(), _PIN_WINDOW_S)  # type: ignore[attr-defined]
+    if count >= _PIN_MAX_FAILURES:
+        raise HTTPException(status_code=429, detail="too many pin attempts")
+
+
+def note_pin_failure(store: object, key: str) -> None:
+    store.cache.add(f"pinfail:{key}", time.time(), _PIN_WINDOW_S)  # type: ignore[attr-defined]
+
+
+def verify_pin_request(request: Request, pin: str, challenge_id: str | None) -> dict[str, Any]:
+    """Shared REST/GraphQL PIN path. Challenge caps + HTTP PIN throttle."""
+    from risk.store import get_store
+
+    protect_sensitive(request)
+    store = get_store()
+    token = bearer_token(request)
+    cid = (challenge_id or "").strip() or None
+    throttle = pin_throttle_key(cid or "standalone", request)
+    assert_pin_not_locked(store, throttle)
+
+    if cid:
+        if require_login():
+            user_id = require_session(request)
+            token = bearer_token(request)
+        else:
+            challenge = store.get_challenge(cid)
+            if challenge is None:
+                note_pin_failure(store, throttle)
+                raise HTTPException(status_code=401, detail="unknown_challenge")
+            session_user = store.session_user(token) if token else None
+            owner = str(challenge["user_id"])
+            if session_user and session_user != owner:
+                note_pin_failure(store, throttle)
+                raise HTTPException(status_code=403, detail="user mismatch")
+            user_id = session_user or owner
+        throttle = pin_throttle_key(user_id, request)
+        assert_pin_not_locked(store, throttle)
+        outcome = store.verify_challenge(cid, user_id=user_id, session_token=token, pin=pin)
+        if not outcome.get("ok"):
+            note_pin_failure(store, throttle)
+            raise HTTPException(status_code=401, detail=str(outcome.get("error") or "invalid challenge"))
+        return outcome
+
+    user_id = require_session(request)
+    throttle = pin_throttle_key(user_id, request)
+    assert_pin_not_locked(store, throttle)
+    if not store.verify_pin(user_id, pin):
+        note_pin_failure(store, throttle)
+        raise HTTPException(status_code=401, detail="invalid pin")
+    return {"ok": True, "sandbox": True, "note": "Sandbox PIN, not bank OTP"}
+
+
 def require_order_auth(request: Request) -> None:
     """Creating provider orders is never anonymous."""
     expected = os.getenv("SENTINALPAY_API_KEY", "").strip()
     if expected:
         authenticate_request(request)
         return
-    if require_login():
+    if bearer_token(request):
         require_session(request)
         return
     raise HTTPException(status_code=401, detail="order creation requires login or SENTINALPAY_API_KEY")

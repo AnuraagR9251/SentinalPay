@@ -23,9 +23,11 @@ export const LoginModal = () => {
       <form onSubmit={submit} className="w-full max-w-sm rounded-[28px] bg-slate-900 border border-slate-700 p-6 space-y-4">
         <div className="flex items-center gap-2">
           <Shield className="w-5 h-5 text-blue-400" />
-          <h2 className="text-lg font-bold text-white font-heading">Sign in</h2>
+          <h2 className="text-lg font-bold text-white font-heading">Sandbox sign-in</h2>
         </div>
-        <p className="text-xs text-slate-400">Demo: aarav@senitenial / demo123 · PIN 1234</p>
+        <p className="text-xs text-slate-400">
+          Local demo credentials only — not a bank, UPI, or NPCI login. User <span className="font-mono">aarav@senitenial</span> / password <span className="font-mono">demo123</span> / sandbox PIN <span className="font-mono">1234</span>.
+        </p>
         <input
           value={userId}
           onChange={(e) => setUserId(e.target.value)}

@@ -8,7 +8,7 @@ GET  /health
 GET  /ready
 POST /webhooks/razorpay              — signed TEST webhooks only
 
-# Rate limiting lives in risk.security (per client_key). Tighten at the HTTP edge before production.
+# HTTP request limits: risk.auth.protect_sensitive (429). Payment velocity stays in risk.security.
 # Persistence uses parameterized SQL in risk.store.
 """
 
@@ -36,13 +36,16 @@ from detection.privacy import mask_identifier
 from payments.razorpay import RazorpayConfigError, get_razorpay_adapter
 from risk.auth import (
     assert_login_not_locked,
+    authenticate_request,
     bearer_token,
     login_throttle_key,
     note_login_failure,
     open_access_warning,
+    protect_sensitive,
     require_login,
     require_order_auth,
     require_session,
+    verify_pin_request,
 )
 from risk.ml_layer import model_status
 from risk.pipeline import PipelineError, evaluate_transaction, http_status_for_pipeline_error
@@ -223,6 +226,40 @@ class LoginRequest(BaseModel):
 class PinRequest(BaseModel):
     pin: str = Field(..., min_length=4, max_length=8)
     challenge_id: str | None = None
+
+
+class RazorpayOrderRequest(BaseModel):
+    amount: float = Field(..., gt=0)
+    currency: str = "INR"
+    receipt: str | None = None
+    transaction_id: str | None = None
+
+    @field_validator("amount")
+    @classmethod
+    def _finite_amount(cls, value: float) -> float:
+        if not isfinite(value):
+            raise ValueError("amount must be a positive finite number")
+        return value
+
+    @field_validator("currency")
+    @classmethod
+    def _currency(cls, value: str) -> str:
+        currency = value.strip().upper()
+        if currency != "INR":
+            raise ValueError("unsupported currency")
+        return currency
+
+    @field_validator("receipt", "transaction_id")
+    @classmethod
+    def _short_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            return None
+        if len(stripped) > 128:
+            raise ValueError("identifier too long")
+        return stripped
 
 
 def _cors_origins() -> list[str]:
@@ -444,35 +481,12 @@ def login(payload: LoginRequest, request: Request) -> dict[str, Any]:
 
 @app.post("/pin/verify")
 def verify_pin(payload: PinRequest, request: Request) -> dict[str, Any]:
-    store = get_store()
-    token = bearer_token(request)
-    if payload.challenge_id:
-        if require_login():
-            user_id = require_session(request)
-            token = bearer_token(request)
-        else:
-            challenge = store.get_challenge(payload.challenge_id.strip())
-            if challenge is None:
-                raise HTTPException(status_code=401, detail="unknown_challenge")
-            session_user = store.session_user(token) if token else None
-            user_id = session_user or str(challenge["user_id"])
-        outcome = store.verify_challenge(
-            payload.challenge_id.strip(),
-            user_id=user_id,
-            session_token=token,
-            pin=payload.pin,
-        )
-        if not outcome.get("ok"):
-            raise HTTPException(status_code=401, detail=str(outcome.get("error") or "invalid challenge"))
-        return outcome
-    user_id = require_session(request)
-    if not store.verify_pin(user_id, payload.pin):
-        raise HTTPException(status_code=401, detail="invalid pin")
-    return {"ok": True, "sandbox": True, "note": "Sandbox PIN, not bank OTP"}
+    return verify_pin_request(request, payload.pin, payload.challenge_id)
 
 
 @app.post("/score", response_model=ScoreResponse)
 def score(payload: ScoreRequest, request: Request) -> ScoreResponse:
+    client_key = protect_sensitive(request)
     if require_login():
         session_user = require_session(request)
         if session_user != payload.user_id:
@@ -480,7 +494,7 @@ def score(payload: ScoreRequest, request: Request) -> ScoreResponse:
     try:
         result = evaluate_transaction(
             pipeline_payload_from_score(payload.model_dump()),
-            client_key=payload.user_id,
+            client_key=client_key,
             session_token=bearer_token(request),
         )
     except PipelineError as exc:
@@ -511,7 +525,10 @@ async def razorpay_webhook(request: Request) -> dict[str, Any]:
     adapter = get_razorpay_adapter()
     if not adapter.webhook_secret:
         raise HTTPException(status_code=503, detail="RAZORPAY_WEBHOOK_SECRET not configured")
+    max_bytes = max(1024, int(os.getenv("SENTINALPAY_WEBHOOK_MAX_BYTES", "65536") or 65536))
     body = await request.body()
+    if len(body) > max_bytes:
+        raise HTTPException(status_code=413, detail="payload too large")
     outcome = adapter.ingest_event(
         body=body,
         signature=request.headers.get("X-Razorpay-Signature"),
@@ -524,18 +541,22 @@ async def razorpay_webhook(request: Request) -> dict[str, Any]:
 
 
 @app.post("/payments/razorpay/orders")
-def razorpay_order(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+def razorpay_order(payload: RazorpayOrderRequest, request: Request) -> dict[str, Any]:
     require_order_auth(request)
     adapter = get_razorpay_adapter()
+    receipt = payload.receipt or payload.transaction_id or "demo"
     try:
         ref = adapter.create_or_reference(
-            amount=float(payload.get("amount") or 0),
-            currency=str(payload.get("currency") or "INR"),
-            receipt=str(payload.get("receipt") or payload.get("transaction_id") or "demo"),
-            notes={"transaction_id": str(payload.get("transaction_id") or "")},
+            amount=payload.amount,
+            currency=payload.currency,
+            receipt=receipt,
+            notes={"transaction_id": payload.transaction_id or ""},
         )
     except RazorpayConfigError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        text = str(exc).lower()
+        if "required" in text:
+            raise HTTPException(status_code=503, detail="razorpay not configured") from exc
+        raise HTTPException(status_code=502, detail="provider_unavailable") from exc
     return {
         "provider": ref.provider,
         "id": ref.provider_payment_id,
@@ -549,6 +570,7 @@ def razorpay_order(payload: dict[str, Any], request: Request) -> dict[str, Any]:
 @app.get("/transactions", response_model=TransactionFeed, response_class=PrettyJSONResponse)
 def transactions(request: Request, limit: int = Query(default=50, ge=1, le=200)) -> TransactionFeed:
     """Newest-first sandbox desk feed. Nested so payment, decision, and models stay distinct."""
+    protect_sensitive(request)
     if require_login():
         require_session(request)
     cap = min(limit, max(10, int(os.getenv("SENTINALPAY_FEED_MAX", "100"))))

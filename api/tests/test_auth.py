@@ -151,6 +151,74 @@ def test_evaluate_rejects_other_user_when_login_on(monkeypatch) -> None:
     assert own.status_code == 200
 
 
+def test_api_key_required_on_score_evaluate_feed_and_graphql(monkeypatch) -> None:
+    monkeypatch.setenv("SENTINALPAY_API_KEY", "lab-secret")
+    client = TestClient(app)
+    score_body = {
+        "transaction_id": "key-score-1",
+        "amount": 250,
+        "payee_vpa": "priya@oksbi",
+        "user_id": "aarav@senitenial",
+        "timestamp": "2026-09-28T11:00:00+00:00",
+        "payer_location": {"lat": 12.9716, "lon": 77.5946},
+        "is_new_payee": False,
+        "purpose": "dining",
+    }
+    eval_body = {
+        "transaction_id": "key-eval-1",
+        "user_id": "aarav@senitenial",
+        "amount": 200,
+        "merchant_id": "shop@oksbi",
+    }
+    assert client.post("/score", json=score_body).status_code == 401
+    assert client.post("/score", json=score_body, headers={"X-API-Key": "nope"}).status_code == 401
+    assert client.get("/transactions").status_code == 401
+    assert client.post("/api/v1/transactions/evaluate", json=eval_body).status_code == 401
+    assert client.get("/api/v1/reviews").status_code == 401
+    ok_headers = {"X-API-Key": "lab-secret"}
+    assert client.post("/score", json=score_body, headers=ok_headers).status_code == 200
+    assert client.post("/api/v1/transactions/evaluate", json=eval_body, headers=ok_headers).status_code == 200
+    assert client.get("/transactions", headers=ok_headers).status_code == 200
+    gql_denied = client.post(
+        "/graphql",
+        json={
+            "query": "mutation Score($input: ScoreInput!) { scoreTransaction(input: $input) { transactionId } }",
+            "variables": {
+                "input": {
+                    "transactionId": "key-gql-1",
+                    "amount": 240.0,
+                    "payeeVpa": "kirana.lab@oksbi",
+                    "userId": "aarav@senitenial",
+                    "timestamp": "2026-09-28T11:00:00+00:00",
+                    "isNewPayee": False,
+                    "purpose": "groceries",
+                }
+            },
+        },
+    )
+    assert gql_denied.json().get("data") is None or gql_denied.json()["data"]["scoreTransaction"] is None
+    assert gql_denied.json().get("errors")
+    gql_ok = client.post(
+        "/graphql",
+        headers=ok_headers,
+        json={
+            "query": "mutation Score($input: ScoreInput!) { scoreTransaction(input: $input) { transactionId } }",
+            "variables": {
+                "input": {
+                    "transactionId": "key-gql-2",
+                    "amount": 240.0,
+                    "payeeVpa": "kirana.lab@oksbi",
+                    "userId": "aarav@senitenial",
+                    "timestamp": "2026-09-28T11:00:00+00:00",
+                    "isNewPayee": False,
+                    "purpose": "groceries",
+                }
+            },
+        },
+    )
+    assert gql_ok.json()["data"]["scoreTransaction"]["transactionId"] == "key-gql-2"
+
+
 def test_health_reports_ae_status() -> None:
     client = TestClient(app)
     health = client.get("/health").json()

@@ -19,8 +19,11 @@ from risk.auth import (
     bearer_token,
     login_throttle_key,
     note_login_failure,
+    open_access_warning,
+    protect_sensitive,
     require_login,
     require_session,
+    verify_pin_request,
 )
 from risk.ml_layer import model_status
 from risk.pipeline import PipelineError
@@ -42,6 +45,8 @@ class HealthPayload:
     ml_fallback: Optional[str] = None
     ae_loaded: bool = False
     ae_error: Optional[str] = None
+    open_sandbox: bool = False
+    auth_warning: Optional[str] = None
 
 
 @strawberry.type
@@ -154,13 +159,22 @@ def _session_user(info: Info) -> str:
         raise ValueError(exc.detail) from exc
 
 
-def _enforce_txn_user(info: Info, user_id: str) -> None:
-    """Same session policy for scoreTransaction and evaluateTransaction."""
+def _protect(info: Info) -> str:
+    try:
+        return protect_sensitive(_request(info))
+    except HTTPException as exc:
+        raise ValueError(exc.detail) from exc
+
+
+def _enforce_txn_user(info: Info, user_id: str) -> str:
+    """API key + HTTP limit, then the same session policy as REST."""
+    client_key = _protect(info)
     if not require_login():
-        return
+        return client_key
     session_user = _session_user(info)
     if session_user != user_id:
         raise ValueError("user mismatch")
+    return client_key
 
 
 def _score_payload(result: dict[str, Any], *, public: bool = False) -> ScorePayload:
@@ -213,10 +227,13 @@ class Query:
             ml_fallback=status["ml_fallback"],
             ae_loaded=bool(ae.get("ae_loaded")),
             ae_error=ae.get("ae_error"),
+            open_sandbox=not require_login(),
+            auth_warning=open_access_warning(),
         )
 
     @strawberry.field
     def transactions(self, info: Info, limit: int = 50) -> list[ScorePayload]:
+        _protect(info)
         if require_login():
             _session_user(info)
         rows = get_store().recent_evaluations(min(max(limit, 1), 200))
@@ -259,36 +276,15 @@ class Mutation:
 
     @strawberry.mutation
     def verify_pin(self, info: Info, pin: str, challenge_id: Optional[str] = None) -> PinPayload:
-        request = _request(info)
-        store = get_store()
-        token = bearer_token(request)
-        if challenge_id:
-            if require_login():
-                user_id = _session_user(info)
-                token = bearer_token(request)
-            else:
-                challenge = store.get_challenge(challenge_id.strip())
-                if challenge is None:
-                    raise ValueError("unknown_challenge")
-                session_user = store.session_user(token) if token else None
-                user_id = session_user or str(challenge["user_id"])
-            outcome = store.verify_challenge(
-                challenge_id.strip(),
-                user_id=user_id,
-                session_token=token,
-                pin=pin,
-            )
-            if not outcome.get("ok"):
-                raise ValueError(str(outcome.get("error") or "invalid challenge"))
-            return PinPayload(ok=True, sandbox=True, note=outcome.get("note"))
-        user_id = _session_user(info)
-        if not store.verify_pin(user_id, pin):
-            raise ValueError("invalid pin")
-        return PinPayload(ok=True, sandbox=True, note="Sandbox PIN, not bank OTP")
+        try:
+            outcome = verify_pin_request(_request(info), pin, challenge_id)
+        except HTTPException as exc:
+            raise ValueError(exc.detail) from exc
+        return PinPayload(ok=True, sandbox=True, note=outcome.get("note"))
 
     @strawberry.mutation
     def score_transaction(self, info: Info, input: ScoreInput) -> ScorePayload:
-        _enforce_txn_user(info, input.user_id)
+        client_key = _enforce_txn_user(info, input.user_id)
         raw = {
             "transaction_id": input.transaction_id,
             "amount": input.amount,
@@ -307,7 +303,7 @@ class Mutation:
         try:
             result = run_pipeline(
                 pipeline_payload_from_score(raw),
-                client_key=input.user_id,
+                client_key=client_key,
                 session_token=bearer_token(_request(info)),
             )
         except PipelineError as exc:
@@ -322,7 +318,7 @@ class Mutation:
 
     @strawberry.mutation
     def evaluate_transaction(self, info: Info, input: EvaluateInput) -> EvaluatePayload:
-        _enforce_txn_user(info, input.user_id)
+        client_key = _enforce_txn_user(info, input.user_id)
         payload = {
             "user_id": input.user_id,
             "amount": input.amount,
@@ -338,7 +334,9 @@ class Mutation:
             "recent_failures": input.recent_failures,
         }
         try:
-            result = run_pipeline(payload, client_key=input.user_id, session_token=bearer_token(_request(info)))
+            result = run_pipeline(
+                payload, client_key=client_key, session_token=bearer_token(_request(info))
+            )
         except PipelineError as exc:
             raise ValueError(str(exc)) from exc
         return EvaluatePayload(

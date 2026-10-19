@@ -67,8 +67,8 @@ export const AppProvider = ({ children }) => {
   const [notifications, setNotifications] = useState([
     {
       id: "notif-1",
-      title: "Security Shield Update",
-      message: "Sentinel AI biometric security protection active.",
+      title: "Sandbox notice",
+      message: "Fingerprint and Face ID in this app are simulated. SentinalPay is not a payment processor.",
       time: "10m ago",
       unread: true
     },

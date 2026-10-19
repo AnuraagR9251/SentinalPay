@@ -9,7 +9,13 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
-from risk.auth import authenticate_request, bearer_token, require_login, require_session
+from risk.auth import (
+    assert_http_rate_limit,
+    authenticate_request,
+    bearer_token,
+    require_login,
+    require_session,
+)
 from risk.pipeline import PipelineError, evaluate_transaction, http_status_for_pipeline_error
 from risk.store import get_store
 
@@ -53,6 +59,7 @@ class ReviewRequest(BaseModel):
 
 @router.post("/transactions/evaluate")
 def evaluate(payload: EvaluateRequest, request: Request, client_key: str = Depends(authenticate_request)) -> dict[str, Any]:
+    assert_http_rate_limit(client_key)
     if require_login():
         session_user = require_session(request)
         if session_user != payload.user_id:
@@ -74,6 +81,7 @@ def review(
     payload: ReviewRequest,
     _key: str = Depends(authenticate_request),
 ) -> dict[str, Any]:
+    assert_http_rate_limit(_key)
     try:
         return get_store().submit_review(transaction_id.strip(), payload.decision, payload.reason.strip())
     except KeyError as exc:
@@ -82,6 +90,7 @@ def review(
 
 @router.get("/reviews")
 def reviews(status: str = "PENDING", _key: str = Depends(authenticate_request)) -> list[dict[str, Any]]:
+    assert_http_rate_limit(_key)
     if status != "PENDING":
         return []
     return get_store().pending_reviews()

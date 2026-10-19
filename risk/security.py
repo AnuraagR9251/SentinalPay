@@ -36,12 +36,9 @@ def inspect_security(
     if replay:
         notes.append("possible replay of a recent payment")
 
-    request_ts = now.timestamp()
     event_ts = txn.timestamp.timestamp()
-    per_min = store.cache.add(f"rl:{client_key}", request_ts, 60.0)
-    rate_limited = per_min > config.rate_limit_per_min
-    if rate_limited:
-        notes.append("excessive request rate")
+    # HTTP request-abuse limits live in risk.auth (HTTP 429). This layer is
+    # payment velocity for fraud scoring only. `client_key` kept for callers.
 
     store.cache.add(f"user:{txn.user_id}:tx:5m", event_ts, 300.0)
     store.cache.add(f"user:{txn.user_id}:tx:1h", event_ts, 3600.0)
@@ -64,8 +61,6 @@ def inspect_security(
         score += 20
     if invalid:
         score += 20
-    if rate_limited:
-        score += 15
     if any("device linked" in note for note in notes):
         score += 15
     if high_spend:
@@ -74,7 +69,7 @@ def inspect_security(
         duplicate_transaction=duplicate,
         replay_detected=replay,
         invalid_request=invalid,
-        rate_limited=rate_limited,
+        rate_limited=False,
         security_risk_score=min(100, score),
         notes=tuple(notes),
     )

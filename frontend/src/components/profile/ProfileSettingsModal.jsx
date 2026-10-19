@@ -71,12 +71,12 @@ export const ProfileSettingsModal = () => {
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2">
               <Shield className="w-4 h-4 text-blue-400" />
-              <span className="text-xs font-bold text-white">Sentinel AI Shield 2.0</span>
+              <span className="text-xs font-bold text-white">CSE7102 sandbox</span>
             </div>
-            <span className="text-xs font-extrabold text-emerald-400">99.9% SECURE</span>
+            <span className="text-xs font-extrabold text-amber-400">DEMO ONLY</span>
           </div>
           <p className="text-[11px] text-slate-300">
-            End-to-end device tokenization, anti-phishing AI scan, and biometric encrypted vault are active.
+            SentinalPay is not a payment processor. Fingerprint, Face ID, and “biometric vault” UI are simulated. Demo PIN 1234 is not a bank UPI PIN.
           </p>
         </div>
 

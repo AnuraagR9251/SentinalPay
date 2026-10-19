@@ -124,13 +124,14 @@ export const UpiPinModal = () => {
             </button>
           ))}
 
-          {/* Biometric trigger */}
+          {/* Simulated fingerprint — not device biometrics */}
           <button
             type="button"
             disabled={isProcessing}
             onClick={handleBiometricAuth}
             className="w-16 h-16 rounded-2xl bg-slate-900/60 hover:bg-blue-600/20 text-blue-400 flex items-center justify-center mx-auto border border-slate-800 transition-all cursor-pointer"
-            title="Authenticate with Touch/Face ID"
+            title="Simulated fingerprint — not real Face ID / Touch ID"
+            aria-label="Simulated fingerprint, not real biometrics"
           >
             <Fingerprint className="w-7 h-7" />
           </button>
@@ -156,10 +157,14 @@ export const UpiPinModal = () => {
           </button>
         </div>
 
+        <p className="text-[10px] text-slate-500 mb-2">
+          Fingerprint button is a UI mock. It submits the sandbox PIN, not a biometric match.
+        </p>
+
         {/* Security watermark footer */}
         <div className="pt-2 border-t border-slate-900 flex items-center justify-center gap-1.5 text-[10px] text-slate-400 font-medium">
           <Shield className="w-3 h-3 text-emerald-400" />
-          <span>NPCI • UPI 2.0 • Sentinel Shield Protected</span>
+          <span>SentinalPay sandbox — not a payment processor, not NPCI</span>
         </div>
       </div>
     </div>
