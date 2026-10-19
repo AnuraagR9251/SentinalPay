@@ -88,6 +88,7 @@
   "max_abs_label_corr": 0.27523287806228747,
   "high_corr_features": {},
   "geo_leak": false,
+  "calibrated_for_upi": false,
   "model_version": "xgb_v3",
   "geo_feature_importance_share": 0.0,
   "limitations": [
@@ -96,6 +97,8 @@
     "CASH_OUT / full-drain flags excluded from ML to avoid simulator label leakage.",
     "Thresholds tuned on a later chronological slice; newest slice is the test report.",
     "Experimental \u2014 not a certified fraud detector.",
-    "PaySim fraud is time-clustered; the newest slice can be mostly fraud, so PR/review rates are not a real UPI false-positive rate."
+    "PaySim fraud is time-clustered; the newest slice can be mostly fraud, so PR/review rates are not a real UPI false-positive rate.",
+    "hour_of_day is PaySim step-hour/23, not UPI circadian risk; it can dominate gain as a time-cluster proxy.",
+    "calibrated_for_upi is false until a labeled UPI holdout exists."
   ]
 }

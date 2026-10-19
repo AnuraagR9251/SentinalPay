@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { FlaskConical } from 'lucide-react';
+import { formatDecisionLine } from '../../api/scoreDisplay';
 import { useApp } from '../../context/AppContext';
 import { DEMO_PROFILES } from '../../data/mockData';
 
@@ -60,7 +61,13 @@ export const LabPanel = () => {
       </div>
       {lastScore && (
         <p className="text-[11px] font-mono text-slate-400">
-          {lastScore.canonical_decision || '—'} · {lastScore.risk_tier} · {Number(lastScore.risk_score).toFixed(3)}
+          {formatDecisionLine({
+            canonicalDecision: lastScore.canonical_decision,
+            riskTier: lastScore.risk_tier,
+            canonicalRiskScore: lastScore.canonical_risk_score,
+            pXgb: lastScore.P_xgb,
+            mlCalibrated: lastScore.ml_calibrated_for_upi,
+          })}
           {lastScore.ae_available ? '' : ' · AE unavailable'}
           {lastScore.graph_available ? '' : ' · graph unavailable'}
           {lastScore.ml_available === false ? ' · model unavailable' : ''}

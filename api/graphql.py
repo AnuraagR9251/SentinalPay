@@ -28,9 +28,12 @@ from risk.auth import (
     verify_pin_request,
 )
 from risk.ml_layer import model_status
-from risk.pipeline import PipelineError
+from risk.pipeline import PipelineError, http_status_for_pipeline_error
 from risk.pipeline import evaluate_transaction as run_pipeline
 from risk.store import get_store
+
+_LOG = logging.getLogger("sentinalpay.api")
+_SAFE_SCORE_ERROR = "scoring unavailable"
 
 
 @strawberry.type
@@ -49,6 +52,10 @@ class HealthPayload:
     ae_error: Optional[str] = None
     open_sandbox: bool = False
     auth_warning: Optional[str] = None
+    ml_calibrated_for_upi: bool = False
+    ml_evaluation: Optional[str] = None
+    ml_experimental: bool = False
+    ml_note: Optional[str] = None
 
 
 @strawberry.type
@@ -78,6 +85,9 @@ class ScorePayload:
     reason_codes: list[str] | None = None
     policy_version: Optional[str] = None
     inference_latency_ms: Optional[float] = None
+    ml_calibrated_for_upi: Optional[bool] = None
+    ml_evaluation: Optional[str] = None
+    score_components: Optional[JSON] = None
 
 
 @strawberry.type
@@ -154,12 +164,35 @@ def _request(info: Info):
     return getattr(ctx, "request", ctx)
 
 
-def _raise_http(exc: HTTPException) -> None:
-    status = int(exc.status_code)
+def _raise_status(status: int, message: str) -> None:
     raise GraphQLError(
-        str(exc.detail),
-        extensions={"code": status, "httpStatus": status},
+        message,
+        extensions={"code": int(status), "httpStatus": int(status)},
     ) from None
+
+
+def _raise_http(exc: HTTPException) -> None:
+    _raise_status(int(exc.status_code), str(exc.detail))
+
+
+def _raise_pipeline(exc: PipelineError) -> None:
+    _raise_status(http_status_for_pipeline_error(exc), str(exc))
+
+
+def _run_scored_pipeline(info: Info, payload: dict[str, Any], client_key: str) -> dict[str, Any]:
+    try:
+        return run_pipeline(
+            payload,
+            client_key=client_key,
+            session_token=bearer_token(_request(info)),
+        )
+    except PipelineError as exc:
+        _raise_pipeline(exc)
+        raise
+    except Exception:
+        _LOG.exception("graphql scoring failed")
+        _raise_status(500, _SAFE_SCORE_ERROR)
+        raise
 
 
 def _session_user(info: Info) -> str:
@@ -218,6 +251,9 @@ def _score_payload(result: dict[str, Any], *, public: bool = False) -> ScorePayl
         reason_codes=list(result.get("reason_codes") or []),
         policy_version=result.get("policy_version"),
         inference_latency_ms=result.get("inference_latency_ms"),
+        ml_calibrated_for_upi=fields.get("ml_calibrated_for_upi"),
+        ml_evaluation=fields.get("ml_evaluation"),
+        score_components=fields.get("score_components"),
     )
 
 
@@ -241,6 +277,10 @@ class Query:
             ae_error=ae.get("ae_error"),
             open_sandbox=not require_login(),
             auth_warning=open_access_warning(),
+            ml_calibrated_for_upi=bool(status.get("calibrated_for_upi")),
+            ml_evaluation=status.get("evaluation"),
+            ml_experimental=bool(status.get("experimental")),
+            ml_note=status.get("note"),
         )
 
     @strawberry.field
@@ -329,15 +369,8 @@ class Mutation:
             "purpose": input.purpose,
             "device_id": input.device_id,
         }
-        try:
-            result = run_pipeline(
-                pipeline_payload_from_score(raw),
-                client_key=client_key,
-                session_token=bearer_token(_request(info)),
-            )
-        except PipelineError as exc:
-            raise ValueError(str(exc)) from exc
-        logging.getLogger("sentinalpay.api").info(
+        result = _run_scored_pipeline(info, pipeline_payload_from_score(raw), client_key)
+        _LOG.info(
             "graphql transaction_id=%s account=%s canonical=%s",
             input.transaction_id,
             mask_identifier(input.user_id),
@@ -362,12 +395,7 @@ class Mutation:
             "longitude": input.longitude,
             "recent_failures": input.recent_failures,
         }
-        try:
-            result = run_pipeline(
-                payload, client_key=client_key, session_token=bearer_token(_request(info))
-            )
-        except PipelineError as exc:
-            raise ValueError(str(exc)) from exc
+        result = _run_scored_pipeline(info, payload, client_key)
         return EvaluatePayload(
             transaction_id=result["transaction_id"],
             user_id=result.get("user_id") or input.user_id,
@@ -391,7 +419,7 @@ class SentinalSchema(strawberry.Schema):
         noisy = []
         for error in errors:
             status = (error.extensions or {}).get("httpStatus")
-            if status in (401, 403, 429):
+            if status in (401, 403, 409, 422, 429, 500):
                 continue
             noisy.append(error)
         if noisy:

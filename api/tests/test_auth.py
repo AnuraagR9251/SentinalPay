@@ -305,6 +305,9 @@ def test_health_reports_ae_status() -> None:
         assert health.get("ae_error")
         assert health["ae_error"] != "0.0"
     assert health.get("graph_available") is True
+    if health.get("model_loaded"):
+        assert health.get("ml_calibrated_for_upi") is False
+        assert health.get("ml_evaluation") == "synthetic_paysim"
 
 
 def test_health_reports_open_sandbox(monkeypatch) -> None:

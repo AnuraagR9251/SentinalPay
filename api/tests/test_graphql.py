@@ -307,3 +307,80 @@ def test_graphql_rate_limit_does_not_score(monkeypatch) -> None:
     ext = err.get("extensions") or {}
     assert ext.get("httpStatus") == 429 or ext.get("code") == 429
     assert called == [1]
+
+
+def _error_blob(posted) -> str:
+    return str(posted.json()).lower()
+
+
+def test_graphql_score_validation_error_is_422() -> None:
+    client = TestClient(app)
+    posted = _gql(client, SCORE_MUTATION, _score_vars(transactionId="gql-bad-amt", amount=0))
+    assert posted.status_code == 200
+    body = posted.json()
+    assert body.get("data") is None or body["data"]["scoreTransaction"] is None
+    err = body["errors"][0]
+    ext = err.get("extensions") or {}
+    assert ext.get("httpStatus") == 422
+    assert ext.get("code") == 422
+    assert "amount" in err["message"].lower()
+    blob = _error_blob(posted)
+    assert "traceback" not in blob
+    assert "secret" not in blob
+
+
+def test_graphql_score_conflict_is_409() -> None:
+    client = TestClient(app)
+    first = _gql(client, SCORE_MUTATION, _score_vars(transactionId="gql-conflict-1", amount=240.0))
+    assert first.json()["data"]["scoreTransaction"]["transactionId"] == "gql-conflict-1"
+    second = _gql(client, SCORE_MUTATION, _score_vars(transactionId="gql-conflict-1", amount=1500.0))
+    assert second.status_code == 200
+    body = second.json()
+    assert body.get("data") is None or body["data"]["scoreTransaction"] is None
+    err = body["errors"][0]
+    ext = err.get("extensions") or {}
+    assert ext.get("httpStatus") == 409
+    assert ext.get("code") == 409
+    assert "different payment details" in err["message"].lower()
+    blob = _error_blob(second)
+    assert "traceback" not in blob
+    assert "1500" not in blob
+
+
+def test_graphql_score_unexpected_error_is_safe(monkeypatch, caplog) -> None:
+    import logging
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("secret pin 1234 stack leak")
+
+    monkeypatch.setattr("api.graphql.run_pipeline", _boom)
+    client = TestClient(app)
+    with caplog.at_level(logging.ERROR, logger="sentinalpay.api"):
+        posted = _gql(client, SCORE_MUTATION, _score_vars(transactionId="gql-boom-1"))
+    assert posted.status_code == 200
+    body = posted.json()
+    assert body.get("data") is None or body["data"]["scoreTransaction"] is None
+    err = body["errors"][0]
+    ext = err.get("extensions") or {}
+    assert ext.get("httpStatus") == 500
+    assert ext.get("code") == 500
+    assert err["message"] == "scoring unavailable"
+    blob = _error_blob(posted)
+    assert "traceback" not in blob
+    assert "secret pin" not in blob
+    assert "1234" not in blob
+    assert "stack leak" not in blob
+    assert "secret pin 1234" in caplog.text
+
+
+def test_graphql_evaluate_validation_error_is_422() -> None:
+    client = TestClient(app)
+    posted = _gql(client, EVAL_MUTATION, _eval_vars(transactionId="gql-eval-bad", amount=-5))
+    assert posted.status_code == 200
+    body = posted.json()
+    assert body.get("data") is None or body["data"]["evaluateTransaction"] is None
+    err = body["errors"][0]
+    ext = err.get("extensions") or {}
+    assert ext.get("httpStatus") == 422
+    assert ext.get("code") == 422
+    assert "amount" in err["message"].lower()

@@ -33,6 +33,11 @@ def test_score_response_shape() -> None:
     assert 0.0 <= body["risk_score"] <= 1.0
     assert 0 <= body["canonical_risk_score"] <= 100
     assert abs(body["risk_score"] - body["canonical_risk_score"] / 100.0) < 1e-9
+    assert body.get("ml_calibrated_for_upi") is False
+    assert body.get("ml_evaluation") == "synthetic_paysim"
+    assert set(body.get("score_components") or {}) == {"rules", "behavior", "ml", "security"}
+    assert "ae" not in (body.get("score_components") or {})
+    assert body.get("action") in {"ALLOW", "REVIEW", "STEP_UP", "BLOCK"}
     if body["ae_available"]:
         assert body["P_ae"] is not None
         assert 0.0 <= body["P_ae"] <= 1.0

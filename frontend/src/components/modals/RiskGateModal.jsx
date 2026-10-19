@@ -1,10 +1,11 @@
 import React from 'react';
 import { ShieldAlert, ShieldX, LoaderCircle, Clock3 } from 'lucide-react';
+import { formatDecisionLine } from '../../api/scoreDisplay';
 import { useApp } from '../../context/AppContext';
 
 export const RiskGateModal = () => {
   const { riskGateModal, setRiskGateModal, user } = useApp();
-  const { isOpen, phase, riskTier, riskScore, payeeName, amount, canonicalDecision, message } = riskGateModal;
+  const { isOpen, phase, riskTier, payeeName, amount, canonicalDecision, message, pXgb, canonicalRiskScore, mlCalibrated } = riskGateModal;
 
   if (!isOpen) return null;
 
@@ -54,7 +55,13 @@ export const RiskGateModal = () => {
             Held before settlement to {payeeName || 'payee'}. No money has left your account.
           </p>
           <p className="text-[11px] text-slate-500 mt-3 font-mono">
-            {canonicalDecision || 'REVIEW'} → {riskTier} · score {riskScore != null ? Number(riskScore).toFixed(3) : '—'}
+            {formatDecisionLine({
+              canonicalDecision: canonicalDecision || 'REVIEW',
+              riskTier,
+              canonicalRiskScore: canonicalRiskScore,
+              pXgb: pXgb,
+              mlCalibrated: mlCalibrated,
+            })}
           </p>
           <button
             onClick={close}
@@ -83,7 +90,13 @@ export const RiskGateModal = () => {
             {message || `Sentinel blocked this transfer to ${payeeName || 'payee'}. The transaction was not completed.`}
           </p>
           <p className="text-[11px] text-slate-500 mt-3 font-mono">
-            {canonicalDecision || 'BLOCK'} → {riskTier} · score {riskScore != null ? Number(riskScore).toFixed(3) : '—'}
+            {formatDecisionLine({
+              canonicalDecision: canonicalDecision || 'BLOCK',
+              riskTier,
+              canonicalRiskScore: canonicalRiskScore,
+              pXgb: pXgb,
+              mlCalibrated: mlCalibrated,
+            })}
           </p>
           <button
             onClick={close}

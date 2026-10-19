@@ -431,11 +431,18 @@ def _render_desk() -> None:
                 xgb_txt = "unavailable"
             else:
                 xgb_txt = "unknown"
+            canonical = assessment.canonical_risk_score
+            canonical_txt = "—" if canonical is None else f"{int(canonical)}/100"
+            if assessment.ml_available is True:
+                xgb_label = assessment.ml_note or "PaySim-trained; not a UPI-calibrated probability"
+            else:
+                xgb_label = assessment.ml_note or "model unavailable"
             st.caption(
-                f"P_xgb={xgb_txt} · "
+                f"P_xgb={xgb_txt} ({xgb_label}) · "
+                f"canonical {canonical_txt} · "
+                f"legacy 0–1 display={assessment.score:.3f} · "
                 f"P_ae={_opt_prob(assessment.p_ae, assessment.ae_available)} · "
-                f"P_graph={_opt_prob(assessment.p_graph, assessment.graph_available)} · "
-                f"legacy 0–1 score={assessment.score:.3f}"
+                f"P_graph={_opt_prob(assessment.p_graph, assessment.graph_available)}"
             )
             if assessment.ml_label is not None and assessment.ml_probabilities:
                 _probability_bars(assessment.ml_probabilities)

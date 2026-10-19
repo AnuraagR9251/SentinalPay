@@ -428,6 +428,7 @@ def _flatten_case(item: dict[str, Any]) -> dict[str, Any]:
         "ae_available": bool(ae.get("available")),
         "graph_available": bool(graph.get("available")),
         "ml_available": xgb.get("available"),
+        "ml_note": xgb.get("note"),
         "contributions": item.get("triggered_signals") or [],
     }
 
@@ -520,6 +521,8 @@ def rows_from_feed(payload: Any) -> list[tuple[Transaction, RiskAssessment]]:
             ae_available=bool(item.get("ae_available")),
             graph_available=bool(item.get("graph_available")),
             ml_available=item.get("ml_available"),
+            canonical_risk_score=item.get("canonical_risk_score"),
+            ml_note=item.get("ml_note"),
         )
         pairs.append((txn, assessment))
     return pairs

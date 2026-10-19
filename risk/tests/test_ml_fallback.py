@@ -24,6 +24,8 @@ def test_committed_xgb_v3_artifact_loads() -> None:
         assert status["ml_fallback"] is None
         assert status["model_version"]
         assert status["model_version"] != "unavailable"
+        assert status["calibrated_for_upi"] is False
+        assert status["evaluation"] == "synthetic_paysim"
     finally:
         reset_model()
 
@@ -176,6 +178,45 @@ def test_incompatible_model_object(tmp_path: Path, monkeypatch) -> None:
         assert ml.available is False
         assert ml.model_version == "incompatible"
         assert ml.fraud_probability == MISSING_MODEL_PRIOR
+    finally:
+        monkeypatch.delenv("SENTINALPAY_XGB_MODEL", raising=False)
+        reset_model()
+
+
+def test_wrong_feature_schema_uses_prior_not_fraud(tmp_path: Path, monkeypatch) -> None:
+    """A pickle that loads but does not match LIVE_FEATURE_NAMES must not score as fraud."""
+    import joblib
+    from sklearn.dummy import DummyClassifier
+
+    from risk.ml_layer import LIVE_FEATURE_NAMES
+
+    wide = DummyClassifier(strategy="constant", constant=1)
+    wide.fit(np.zeros((4, 3)), np.array([0, 1, 0, 1]))
+    wide_path = tmp_path / "wide.pkl"
+    joblib.dump({"model": wide, "feature_names": ["a", "b", "c"], "version": "xgb_v3"}, wide_path)
+    monkeypatch.setenv("SENTINALPAY_XGB_MODEL", str(wide_path))
+    reset_model()
+    try:
+        ml = infer_fraud(normalize_transaction(_txn("schema-wide")), [], None)
+        assert ml.available is False
+        assert ml.fraud_probability == MISSING_MODEL_PRIOR
+        assert ml.error == "incompatible"
+    finally:
+        monkeypatch.delenv("SENTINALPAY_XGB_MODEL", raising=False)
+        reset_model()
+
+    names = [f"f{i:02d}" for i in range(len(LIVE_FEATURE_NAMES))]
+    renamed = DummyClassifier(strategy="constant", constant=1)
+    renamed.fit(np.zeros((4, len(LIVE_FEATURE_NAMES))), np.array([0, 1, 0, 1]))
+    renamed_path = tmp_path / "renamed.pkl"
+    joblib.dump({"model": renamed, "feature_names": names, "version": "xgb_v3"}, renamed_path)
+    monkeypatch.setenv("SENTINALPAY_XGB_MODEL", str(renamed_path))
+    reset_model()
+    try:
+        ml = infer_fraud(normalize_transaction(_txn("schema-names")), [], None)
+        assert ml.available is False
+        assert ml.fraud_probability == MISSING_MODEL_PRIOR
+        assert ml.error == "incompatible"
     finally:
         monkeypatch.delenv("SENTINALPAY_XGB_MODEL", raising=False)
         reset_model()

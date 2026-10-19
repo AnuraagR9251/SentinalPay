@@ -433,7 +433,9 @@ def train() -> dict[str, float]:
             "Thresholds tuned on a later chronological slice; newest slice is the test report.",
             "Experimental — not a certified fraud detector.",
             "PaySim fraud is time-clustered; the newest slice can be mostly fraud, so PR/review rates are not a real UPI false-positive rate.",
+            "hour_of_day is PaySim step-hour/23, not UPI circadian risk; it can dominate gain as a time-cluster proxy.",
             "Not production-ready: synthetic labels, no UPI ATO labels, calibration is experimental.",
+            "calibrated_for_upi is false until a labeled UPI holdout exists.",
         ],
     }
     print(f"evaluation=synthetic_paysim split=60/20/20")

@@ -26,6 +26,9 @@ const SCORE_FIELDS = `
   reasonCodes
   policyVersion
   inferenceLatencyMs
+  mlCalibratedForUpi
+  mlEvaluation
+  scoreComponents
   topContributingFeatures { name value }
   contributions { name value }
 `;
@@ -56,6 +59,9 @@ function toRestShape(node) {
     reason_codes: node.reasonCodes || [],
     policy_version: node.policyVersion || null,
     inference_latency_ms: node.inferenceLatencyMs,
+    ml_calibrated_for_upi: node.mlCalibratedForUpi,
+    ml_evaluation: node.mlEvaluation || null,
+    score_components: node.scoreComponents || null,
     top_contributing_features: node.topContributingFeatures || [],
     contributions: node.contributions || []
   };

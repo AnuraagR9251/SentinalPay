@@ -133,6 +133,9 @@ class ScoreResponse(BaseModel):
     challenge_id: str | None = None
     challenge_kind: str | None = None
     challenge_note: str | None = None
+    ml_calibrated_for_upi: bool | None = None
+    ml_evaluation: str | None = None
+    score_components: dict[str, float] | None = None
 
 
 class PrettyJSONResponse(JSONResponse):
@@ -218,6 +221,10 @@ class HealthResponse(BaseModel):
     ae_note: str | None = None
     graph_available: bool = True
     graph_note: str | None = None
+    ml_calibrated_for_upi: bool = False
+    ml_evaluation: str | None = None
+    ml_experimental: bool = False
+    ml_note: str | None = None
 
 
 class LoginRequest(BaseModel):
@@ -320,7 +327,7 @@ def _feed_item(row: dict[str, Any]) -> FeedCase:
         ae_note = exp.get("note")
     graph_note = exp.get("note") if graph_available else (exp.get("graph_error") or "graph unavailable")
     if ml_available is True:
-        xgb_note = None
+        xgb_note = None if ml.get("calibrated_for_upi") else "PaySim-trained; not a UPI-calibrated probability"
         xgb_value = fields.get("P_xgb")
     elif ml_available is False:
         xgb_value = None
@@ -451,6 +458,10 @@ def health() -> HealthResponse:
             ae_note=ae.get("ae_note"),
             graph_available=True,
             graph_note=graph_note,
+            ml_calibrated_for_upi=False,
+            ml_evaluation=None,
+            ml_experimental=False,
+            ml_note=None,
         )
     return HealthResponse(
         status="ok",
@@ -465,6 +476,10 @@ def health() -> HealthResponse:
         ae_note=ae.get("ae_note"),
         graph_available=True,
         graph_note=graph_note,
+        ml_calibrated_for_upi=bool(status.get("calibrated_for_upi")),
+        ml_evaluation=status.get("evaluation"),
+        ml_experimental=bool(status.get("experimental")),
+        ml_note=status.get("note"),
     )
 
 

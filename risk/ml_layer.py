@@ -19,11 +19,16 @@ _MODEL_VERSION = "unavailable"
 _LOAD_ERROR: str | None = None
 # ponytail: 0.5 is a documented conservative prior (not "safe"). Upgrade: calibrated class prior from production traffic.
 MISSING_MODEL_PRIOR = 0.5
+XGB_EVALUATION = "synthetic_paysim"
+UNCALIBRATED_NOTE = "PaySim-trained; not a UPI-calibrated probability"
 _MISSING = object()
+_SAVED_FEATURE_NAMES: tuple[str, ...] | None = None
 
 # Train and infer use this order. First 10 come from extract_feature_vector.
 # PaySim CASH_OUT / full-drain flags are omitted — they encode the simulator's
 # fraud recipe, not a general UPI pattern.
+# hour_of_day is wall-clock hour/23. On PaySim, timestamp is epoch+step hours,
+# so that column tracks simulator time clusters, not UPI circadian risk.
 LIVE_FEATURE_NAMES: tuple[str, ...] = FEATURE_VECTOR_NAMES + (
     "hour_of_day",
     "amount_to_median",
@@ -41,21 +46,23 @@ LIVE_FEATURE_NAMES: tuple[str, ...] = FEATURE_VECTOR_NAMES + (
 
 
 def reset_model() -> None:
-    global _MODEL, _MODEL_VERSION, _LOAD_ERROR
+    global _MODEL, _MODEL_VERSION, _LOAD_ERROR, _SAVED_FEATURE_NAMES
     _MODEL = None
     _MODEL_VERSION = "unavailable"
     _LOAD_ERROR = None
+    _SAVED_FEATURE_NAMES = None
 
 
 def _mark_missing(reason: str, version: str) -> None:
-    global _MODEL, _MODEL_VERSION, _LOAD_ERROR
+    global _MODEL, _MODEL_VERSION, _LOAD_ERROR, _SAVED_FEATURE_NAMES
     _MODEL = _MISSING
     _MODEL_VERSION = version
     _LOAD_ERROR = reason
+    _SAVED_FEATURE_NAMES = None
 
 
 def _load() -> Any:
-    global _MODEL, _MODEL_VERSION, _LOAD_ERROR
+    global _MODEL, _MODEL_VERSION, _LOAD_ERROR, _SAVED_FEATURE_NAMES
     if _MODEL is _MISSING:
         return None
     if _MODEL is not None:
@@ -76,18 +83,30 @@ def _load() -> Any:
     except Exception:
         _mark_missing("load_error", "error")
         return None
+    saved_names: tuple[str, ...] | None = None
     if isinstance(loaded, dict) and "model" in loaded:
         model = loaded.get("model")
         version = str(loaded.get("version") or "xgb_v3")
+        raw_names = loaded.get("feature_names")
+        if isinstance(raw_names, (list, tuple)):
+            saved_names = tuple(str(name) for name in raw_names)
     else:
         model = loaded
         version = "xgb_v3"
     if model is None or not hasattr(model, "predict_proba"):
         _mark_missing("incompatible", "incompatible")
         return None
+    n_in = int(getattr(model, "n_features_in_", len(LIVE_FEATURE_NAMES)))
+    if n_in != len(LIVE_FEATURE_NAMES):
+        _mark_missing("incompatible", "incompatible")
+        return None
+    if saved_names is not None and saved_names != LIVE_FEATURE_NAMES:
+        _mark_missing("incompatible", "incompatible")
+        return None
     _MODEL = model
     _MODEL_VERSION = version
     _LOAD_ERROR = None
+    _SAVED_FEATURE_NAMES = saved_names or LIVE_FEATURE_NAMES
     return _MODEL
 
 
@@ -163,6 +182,10 @@ def model_status() -> dict[str, Any]:
         "model_version": _MODEL_VERSION if loaded else _MODEL_VERSION or "unavailable",
         "ml_fallback": None if loaded else "conservative_prior_0.5; ALLOW demoted to REVIEW",
         "load_error": None if loaded else _LOAD_ERROR,
+        "calibrated_for_upi": False,
+        "evaluation": XGB_EVALUATION if loaded else None,
+        "experimental": bool(loaded),
+        "note": UNCALIBRATED_NOTE if loaded else None,
     }
 
 
@@ -262,9 +285,7 @@ def infer_fraud(
             error=reason,
         )
     try:
-        n_in = int(getattr(model, "n_features_in_", len(LIVE_FEATURE_NAMES)))
-        names = LIVE_FEATURE_NAMES[:n_in]
-        x = np.asarray([[vector.get(name, 0.0) for name in names]], dtype=np.float32)
+        x = np.asarray([[vector.get(name, 0.0) for name in LIVE_FEATURE_NAMES]], dtype=np.float32)
         proba = float(model.predict_proba(x)[0, 1])
     except Exception:
         # Fail-safe: prior 0.5, available=False. Aggregate demotes ALLOW → REVIEW.
@@ -274,10 +295,24 @@ def infer_fraud(
             features=vector,
             available=False,
             error="inference_error",
+            calibrated_for_upi=False,
+            evaluation=None,
+        )
+    if not np.isfinite(proba):
+        return MlResult(
+            fraud_probability=MISSING_MODEL_PRIOR,
+            model_version="error",
+            features=vector,
+            available=False,
+            error="inference_error",
+            calibrated_for_upi=False,
+            evaluation=None,
         )
     return MlResult(
         fraud_probability=max(0.0, min(1.0, proba)),
         model_version=_MODEL_VERSION,
         features=vector,
         available=True,
+        calibrated_for_upi=False,
+        evaluation=XGB_EVALUATION,
     )

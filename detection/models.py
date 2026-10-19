@@ -104,3 +104,5 @@ class RiskAssessment:
     ae_available: bool = False
     graph_available: bool = False
     ml_available: Optional[bool] = None
+    canonical_risk_score: Optional[int] = None
+    ml_note: Optional[str] = None

@@ -252,6 +252,7 @@ def _result_payload(
     engine_version: str,
     elapsed_ms: float,
     experimental: dict[str, Any] | None = None,
+    policy_overrides: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     payload = {
         "transaction_id": txn_id,
@@ -291,8 +292,11 @@ def _result_payload(
             "model_version": ml.model_version,
             "available": ml.available,
             "error": ml.error,
+            "calibrated_for_upi": bool(ml.calibrated_for_upi),
+            "evaluation": ml.evaluation,
         },
         "policy": dict(decision.policy),
+        "policy_overrides": list(policy_overrides or []),
         "risk_factors": [{"factor": f.factor, "impact": f.impact} for f in decision.risk_factors],
         "components": {k: round(v, 2) for k, v in decision.components.items()},
         "experimental": experimental or {
@@ -334,8 +338,11 @@ def evaluate_transaction(
     rules = merge_ato(run_rules(txn, history, cfg), security)
     behavior = analyze_behavior(txn, history)
     ml = infer_fraud(txn, history, home)
-    decision = aggregate_and_decide(security, rules, behavior, ml, cfg)
-    decision = apply_routine_small_decision(decision, rules, txn.amount, ml_available=ml.available)
+    blended = aggregate_and_decide(security, rules, behavior, ml, cfg)
+    decision = apply_routine_small_decision(blended, rules, txn.amount, ml_available=ml.available)
+    overrides: list[str] = []
+    if blended.decision == "REVIEW" and decision.decision == "ALLOW":
+        overrides.append("ROUTINE_SMALL_ALLOW")
     experimental = _experimental_signals(txn, history, home, db)
     elapsed_ms = (time.perf_counter() - started) * 1000.0
     result = _result_payload(
@@ -350,6 +357,7 @@ def evaluate_transaction(
         engine_version=cfg.engine_version,
         elapsed_ms=elapsed_ms,
         experimental=experimental,
+        policy_overrides=overrides,
     )
     result["action"] = policy_action(result, amount=txn.amount)
     try:

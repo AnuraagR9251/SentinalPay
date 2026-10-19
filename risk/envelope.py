@@ -27,6 +27,12 @@ def attach_public_envelope(result: Mapping[str, Any]) -> dict[str, Any]:
             codes.append(str(name))
     if model_available is False and "ML_UNAVAILABLE" not in codes:
         codes.append("ML_UNAVAILABLE")
+    if model_available is True and ml.get("calibrated_for_upi") is False:
+        codes.append("ML_UNCALIBRATED_PAYSIM")
+    for override in out.get("policy_overrides") or []:
+        name = str(override)
+        if name and name not in codes:
+            codes.append(name)
     security = out.get("security") if isinstance(out.get("security"), dict) else {}
     if security.get("replay_detected"):
         codes.append("REPLAY")

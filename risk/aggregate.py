@@ -58,9 +58,15 @@ def aggregate_and_decide(
             ),
         )
     elif ml.fraud_probability >= 0.6:
-        factors.append(
-            RiskFactor(factor="Model assigned a high fraud probability", impact="HIGH")
-        )
+        if ml.calibrated_for_upi:
+            factors.append(RiskFactor(factor="Model assigned a high fraud probability", impact="HIGH"))
+        else:
+            factors.append(
+                RiskFactor(
+                    factor="Uncalibrated PaySim model assigned high P(fraud); not a UPI-validated probability",
+                    impact="HIGH",
+                )
+            )
     # Keep the public list short — no raw feature dump / SHAP values.
     factors = factors[:8]
 

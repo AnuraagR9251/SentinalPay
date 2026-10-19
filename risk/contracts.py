@@ -71,6 +71,8 @@ class MlResult:
     features: dict[str, float] = field(default_factory=dict)
     available: bool = True
     error: str | None = None
+    calibrated_for_upi: bool = False
+    evaluation: str | None = None
 
 
 @dataclass(frozen=True)

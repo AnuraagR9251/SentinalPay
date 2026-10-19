@@ -27,6 +27,27 @@ def test_envelope_hides_fallback_prior() -> None:
     assert out["triggered_signals"][0]["name"] == "NEW_DEVICE"
 
 
+def test_envelope_marks_uncalibrated_paysim() -> None:
+    out = attach_public_envelope(
+        {
+            "transaction_id": "tx-uc",
+            "engine_version": "sentinelpay_v1",
+            "processing_ms": 3.0,
+            "ml": {
+                "available": True,
+                "fraud_probability": 0.9996,
+                "calibrated_for_upi": False,
+                "evaluation": "synthetic_paysim",
+            },
+            "rules": {"triggered_rules": []},
+            "policy_overrides": ["ROUTINE_SMALL_ALLOW"],
+        }
+    )
+    assert out["model_probability"] == 0.9996
+    assert "ML_UNCALIBRATED_PAYSIM" in out["reason_codes"]
+    assert "ROUTINE_SMALL_ALLOW" in out["reason_codes"]
+
+
 def test_envelope_genuine_probability() -> None:
     out = attach_public_envelope(
         {

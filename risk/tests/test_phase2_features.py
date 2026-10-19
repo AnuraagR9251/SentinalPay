@@ -96,6 +96,7 @@ def test_metrics_file_is_honest() -> None:
     assert metrics.get("geo_leak") is False
     assert abs(float(metrics["roc_auc"]) - 1.0) > 1e-6
     assert metrics.get("evaluation") == "synthetic_paysim"
+    assert metrics.get("calibrated_for_upi") is False
     assert metrics.get("feature_names") == list(LIVE_FEATURE_NAMES)
     assert "is_full_drain" not in metrics["feature_names"]
     assert float(metrics.get("max_abs_label_corr") or 0) < 0.9

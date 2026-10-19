@@ -155,7 +155,27 @@ def test_feed_item_marks_genuine_model_available() -> None:
     xgb = case.models.xgboost
     assert xgb.available is True
     assert xgb.value == 0.81
-    assert xgb.note is None
+    assert xgb.note == "PaySim-trained; not a UPI-calibrated probability"
+
+    calibrated = _feed_item(
+        _row(
+            {
+                "transaction_id": "tx-ml-cal",
+                "risk_score": 12,
+                "decision": "ALLOW",
+                "ml": {
+                    "available": True,
+                    "fraud_probability": 0.81,
+                    "model_version": "xgb_v4",
+                    "calibrated_for_upi": True,
+                },
+                "rules": {"triggered_rules": []},
+            }
+        )
+    )
+    assert calibrated.models.xgboost.available is True
+    assert calibrated.models.xgboost.value == 0.81
+    assert calibrated.models.xgboost.note is None
 
 
 def test_feed_item_unavailable_model_hides_fallback_prior() -> None:

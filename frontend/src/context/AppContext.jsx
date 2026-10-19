@@ -389,7 +389,10 @@ export const AppProvider = ({ children }) => {
           ...prev,
           phase: 'hold',
           riskTier: tier,
-          riskScore: data.risk_score,
+          riskScore: data.canonical_risk_score,
+          canonicalRiskScore: data.canonical_risk_score,
+          pXgb: data.P_xgb,
+          mlCalibrated: data.ml_calibrated_for_upi,
           canonicalDecision: data.canonical_decision
         }));
         return;
@@ -398,7 +401,10 @@ export const AppProvider = ({ children }) => {
         ...prev,
         phase: 'block',
         riskTier: tier,
-        riskScore: data.risk_score,
+        riskScore: data.canonical_risk_score,
+        canonicalRiskScore: data.canonical_risk_score,
+        pXgb: data.P_xgb,
+        mlCalibrated: data.ml_calibrated_for_upi,
         canonicalDecision: data.canonical_decision
       }));
     } catch (err) {
@@ -583,7 +589,10 @@ export const AppProvider = ({ children }) => {
         isOpen: true,
         phase,
         riskTier: data.risk_tier,
-        riskScore: data.risk_score,
+        riskScore: data.canonical_risk_score,
+        canonicalRiskScore: data.canonical_risk_score,
+        pXgb: data.P_xgb,
+        mlCalibrated: data.ml_calibrated_for_upi,
         canonicalDecision: data.canonical_decision,
         payeeName: body.payee_vpa,
         amount: body.amount
