@@ -28,7 +28,7 @@ from risk.ml_layer import infer_fraud
 from risk.normalize import NormalizationError, normalize_transaction
 from risk.rules import run_rules
 from risk.security import inspect_security
-from risk.policy import policy_action
+from risk.policy import apply_routine_small_decision, policy_action
 from risk.store import RiskStore, StoreConflictError, get_store, payment_identity
 
 # ponytail: 50 km city-corridor heuristic. Upgrade: per-user commute ellipsoid from stored fixes.
@@ -335,6 +335,7 @@ def evaluate_transaction(
     behavior = analyze_behavior(txn, history)
     ml = infer_fraud(txn, history, home)
     decision = aggregate_and_decide(security, rules, behavior, ml, cfg)
+    decision = apply_routine_small_decision(decision, rules, txn.amount, ml_available=ml.available)
     experimental = _experimental_signals(txn, history, home, db)
     elapsed_ms = (time.perf_counter() - started) * 1000.0
     result = _result_payload(
@@ -350,7 +351,7 @@ def evaluate_transaction(
         elapsed_ms=elapsed_ms,
         experimental=experimental,
     )
-    result["action"] = policy_action(result)
+    result["action"] = policy_action(result, amount=txn.amount)
     try:
         wrote = db.persist(txn, security, rules, behavior, ml, decision, cfg.engine_version, elapsed_ms, result=result)
     except StoreConflictError as exc:

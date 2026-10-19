@@ -73,7 +73,7 @@ _CITY_CENTRES: tuple[tuple[str, float, float], ...] = (
     ("Chennai", 13.0827, 80.2707),
     ("Kolkata", 22.5726, 88.3639),
 )
-REFRESH_SECONDS = 1.6
+REFRESH_SECONDS = 8.0
 
 st.set_page_config(
     page_title="SentinalPay · Fraud Desk",
@@ -471,7 +471,9 @@ def main() -> None:
         st.rerun()
     ok_at = getattr(source, "last_ok_at", None)
     err = getattr(source, "last_error", None)
-    if err:
+    if err == "RateLimited":
+        c4.caption("Rate limited · holding last feed")
+    elif err:
         c4.caption(f"Disconnected · {err}")
     elif ok_at:
         c4.caption(f"Connected · {ok_at.strftime('%H:%M:%S UTC')}")

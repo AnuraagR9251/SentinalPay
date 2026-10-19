@@ -6,6 +6,49 @@ from api.main import app
 from risk.store import get_store
 
 
+def _pin_gql(client, pin: str, challenge_id: str | None = None, headers: dict | None = None):
+    cid = f', challengeId: "{challenge_id}"' if challenge_id else ""
+    return client.post(
+        "/graphql",
+        headers=headers or {},
+        json={"query": f'mutation {{ verifyPin(pin: "{pin}"{cid}) {{ ok error }} }}'},
+    )
+
+
+def test_graphql_wrong_pin_returns_payload() -> None:
+    client = TestClient(app)
+    store = get_store()
+    cid = store.create_challenge("aarav@senitenial", "chal-msg-1", None, max_attempts=3)["challenge_id"]
+    gql = _pin_gql(client, "0000", cid)
+    body = gql.json()
+    assert not body.get("errors")
+    assert body["data"]["verifyPin"]["ok"] is False
+    assert body["data"]["verifyPin"]["error"] == "invalid_pin"
+
+
+def test_graphql_third_wrong_pin_locks() -> None:
+    client = TestClient(app)
+    store = get_store()
+    cid = store.create_challenge("aarav@senitenial", "chal-lock-1", None, max_attempts=3)["challenge_id"]
+    first = _pin_gql(client, "0000", cid).json()["data"]["verifyPin"]
+    second = _pin_gql(client, "0000", cid).json()["data"]["verifyPin"]
+    third = _pin_gql(client, "0000", cid).json()["data"]["verifyPin"]
+    assert first["error"] == "invalid_pin"
+    assert second["error"] == "invalid_pin"
+    assert third["ok"] is False
+    assert third["error"] == "locked"
+
+
+def test_open_sandbox_pin_without_session() -> None:
+    client = TestClient(app)
+    bad = client.post("/pin/verify", json={"pin": "0000"})
+    assert bad.status_code == 401
+    assert bad.json()["detail"] == "invalid pin"
+    good = client.post("/pin/verify", json={"pin": "1234"})
+    assert good.status_code == 200
+    assert good.json()["ok"] is True
+
+
 def test_standalone_pin_throttle_shared_with_graphql() -> None:
     client = TestClient(app)
     token = client.post("/login", json={"user_id": "aarav@senitenial", "password": "demo123"}).json()["token"]
@@ -14,13 +57,11 @@ def test_standalone_pin_throttle_shared_with_graphql() -> None:
         client.post("/pin/verify", headers=headers, json={"pin": "0000"})
     locked = client.post("/pin/verify", headers=headers, json={"pin": "0000"})
     assert locked.status_code == 429
-    gql = client.post(
-        "/graphql",
-        headers=headers,
-        json={"query": 'mutation { verifyPin(pin: "0000") { ok } }'},
-    )
-    assert gql.json().get("errors")
-    assert "too many pin" in gql.json()["errors"][0]["message"].lower()
+    gql = _pin_gql(client, "0000", headers=headers)
+    body = gql.json()
+    assert not body.get("errors")
+    assert body["data"]["verifyPin"]["ok"] is False
+    assert body["data"]["verifyPin"]["error"] == "locked"
 
 
 def test_challenge_caps_and_replay_on_both_routes() -> None:
@@ -31,12 +72,11 @@ def test_challenge_caps_and_replay_on_both_routes() -> None:
     for _ in range(3):
         bad = client.post("/pin/verify", json={"pin": "0000", "challenge_id": cid})
         assert bad.status_code == 401
-    gql = client.post(
-        "/graphql",
-        json={"query": f'mutation {{ verifyPin(pin: "1234", challengeId: "{cid}") {{ ok }} }}'},
-    )
-    assert gql.json().get("errors")
-    assert "locked" in gql.json()["errors"][0]["message"].lower()
+    gql = _pin_gql(client, "1234", cid)
+    body = gql.json()
+    assert not body.get("errors")
+    assert body["data"]["verifyPin"]["ok"] is False
+    assert body["data"]["verifyPin"]["error"] == "locked"
 
 
 def test_challenge_session_mismatch_and_expiry() -> None:

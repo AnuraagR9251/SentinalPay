@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -537,8 +538,19 @@ class HttpTransactionSource:
         self._buffer: list[tuple[Transaction, RiskAssessment]] = []
         self.last_error: str | None = None
         self.last_ok_at: datetime | None = None
+        self._cooldown_until: float = 0.0
+
+    def _note_rate_limited(self, retry_after: str | None) -> list[tuple[Transaction, RiskAssessment]]:
+        wait = 8.0
+        if retry_after and str(retry_after).strip().isdigit():
+            wait = max(1.0, float(str(retry_after).strip()))
+        self._cooldown_until = time.monotonic() + wait
+        self.last_error = "RateLimited"
+        return list(self._buffer)
 
     def pull(self) -> list[tuple[Transaction, RiskAssessment]]:
+        if time.monotonic() < self._cooldown_until:
+            return list(self._buffer)
         req = Request(
             f"{self.base_url}/transactions?limit=50",
             headers={"Accept": "application/json"},
@@ -547,7 +559,16 @@ class HttpTransactionSource:
         try:
             with urlopen(req, timeout=3) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
-        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError, ValueError) as exc:
+        except HTTPError as exc:
+            if int(getattr(exc, "code", 0) or 0) == 429:
+                retry = None
+                headers = getattr(exc, "headers", None)
+                if headers is not None:
+                    retry = headers.get("Retry-After") or headers.get("retry-after")
+                return self._note_rate_limited(retry)
+            self.last_error = type(exc).__name__
+            return list(self._buffer)
+        except (URLError, TimeoutError, json.JSONDecodeError, OSError, ValueError) as exc:
             self.last_error = type(exc).__name__
             return list(self._buffer)
         rows = feed_rows(payload)

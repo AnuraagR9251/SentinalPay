@@ -1,3 +1,5 @@
+import { graphqlFailure } from './http.js';
+
 const SCORE_API = import.meta.env.VITE_SCORE_API_URL || 'http://localhost:8000';
 
 const SCORE_FIELDS = `
@@ -67,9 +69,7 @@ export async function graphql(query, variables, headers = {}) {
   });
   const body = await response.json();
   if (body.errors?.length) {
-    const err = new Error(body.errors[0].message);
-    err.graphql = true;
-    throw err;
+    throw graphqlFailure(body);
   }
   return body.data;
 }
@@ -98,12 +98,21 @@ export async function loginViaGraphql(userId, password) {
 }
 
 export async function verifyPinViaGraphql(pin, headers = {}, challengeId = null) {
-  const data = await graphql(
-    `mutation Pin($pin: String!, $challengeId: String) {
-      verifyPin(pin: $pin, challengeId: $challengeId) { ok note }
-    }`,
-    { pin, challengeId: challengeId || null },
-    headers
-  );
-  return Boolean(data.verifyPin?.ok);
+  try {
+    const data = await graphql(
+      `mutation Pin($pin: String!, $challengeId: String) {
+        verifyPin(pin: $pin, challengeId: $challengeId) { ok note error }
+      }`,
+      { pin, challengeId: challengeId || null },
+      headers
+    );
+    const node = data.verifyPin || {};
+    return { ok: Boolean(node.ok), error: node.error || '' };
+  } catch (err) {
+    const msg = String((err && err.message) || '').toLowerCase();
+    if (err?.rateLimited || msg.includes('too many pin') || msg.includes('locked')) {
+      return { ok: false, error: 'locked' };
+    }
+    return { ok: false, error: 'invalid_pin' };
+  }
 }

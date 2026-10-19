@@ -283,3 +283,27 @@ def test_graphql_logout_revokes_token(monkeypatch) -> None:
     assert scored.json().get("errors")
     missing = _gql(client, "mutation { logout }")
     assert missing.json().get("errors")
+
+
+def test_graphql_rate_limit_does_not_score(monkeypatch) -> None:
+    import api.graphql as gqlmod
+
+    monkeypatch.setenv("SENTINALPAY_HTTP_RATE_LIMIT_PER_MIN", "1")
+    called: list[int] = []
+    original = gqlmod.run_pipeline
+
+    def _run(*args, **kwargs):
+        called.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(gqlmod, "run_pipeline", _run)
+    client = TestClient(app)
+    first = _gql(client, SCORE_MUTATION, _score_vars(transactionId="gql-rl-1"))
+    second = _gql(client, SCORE_MUTATION, _score_vars(transactionId="gql-rl-2"))
+    assert first.json().get("data", {}).get("scoreTransaction") is not None
+    assert second.json().get("data") is None or second.json()["data"]["scoreTransaction"] is None
+    err = second.json()["errors"][0]
+    assert "too many" in err["message"].lower()
+    ext = err.get("extensions") or {}
+    assert ext.get("httpStatus") == 429 or ext.get("code") == 429
+    assert called == [1]

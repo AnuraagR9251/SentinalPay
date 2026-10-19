@@ -109,3 +109,50 @@ def test_pipeline_and_review(tmp_path: Path) -> None:
     if far["decision"] == "REVIEW":
         stored = store.submit_review(far["transaction_id"], "APPROVED", "known travel")
         assert stored["status"] == "APPROVED"
+
+
+def test_small_grocery_is_allow_not_step_up(tmp_path: Path) -> None:
+    store = RiskStore(tmp_path / "small.db")
+    now = datetime(2026, 9, 28, 10, 30, tzinfo=timezone.utc)
+    result = evaluate_transaction(
+        {
+            "transaction_id": "TXN_SMALL_200",
+            "user_id": "USR_SMALL",
+            "amount": 200,
+            "merchant_id": "kirana@oksbi",
+            "merchant_category": "groceries",
+            "timestamp": now.isoformat(),
+            "device_id": "DEV_SMALL",
+            "latitude": 12.9716,
+            "longitude": 77.5946,
+        },
+        store=store,
+        config=RiskConfig(),
+    )
+    assert result["decision"] == "ALLOW"
+    assert result["action"] == "ALLOW"
+    assert not result.get("challenge_id")
+
+
+def test_velocity_on_small_amount_still_steps_up(tmp_path: Path) -> None:
+    store = RiskStore(tmp_path / "vel.db")
+    now = datetime(2026, 9, 28, 10, 30, tzinfo=timezone.utc)
+    last = None
+    for i in range(5):
+        last = evaluate_transaction(
+            {
+                "transaction_id": f"TXN_VEL_{i}",
+                "user_id": "USR_VEL",
+                "amount": 200,
+                "merchant_id": f"burst{i}@oksbi",
+                "timestamp": (now + timedelta(seconds=i * 20)).isoformat(),
+                "device_id": "DEV_VEL",
+            },
+            store=store,
+            config=RiskConfig(),
+        )
+    names = {item["rule"] for item in last["rules"]["triggered_rules"]}
+    assert "HIGH_VELOCITY" in names
+    assert last["decision"] in {"REVIEW", "BLOCK"}
+    if last["decision"] == "REVIEW":
+        assert last["action"] == "STEP_UP"

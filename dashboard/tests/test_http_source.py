@@ -1,8 +1,10 @@
 """HttpTransactionSource maps GET /transactions JSON into desk pairs."""
 
 from datetime import datetime, timezone
+from email.message import EmailMessage
+from io import BytesIO
 from pathlib import Path
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 from dashboard.data_simulator import HttpTransactionSource, merge_feed, rows_from_feed
 from detection.models import RiskTier
@@ -254,6 +256,32 @@ def test_rows_from_feed_skips_missing_score() -> None:
         ]
     }
     assert rows_from_feed(payload) == []
+
+
+def test_http_source_429_keeps_buffer_and_skips_until_retry(monkeypatch) -> None:
+    source = HttpTransactionSource("http://127.0.0.1:8000")
+    source._buffer = rows_from_feed([_pair("tx-keep", 10)])
+    calls: list[int] = []
+    headers = EmailMessage()
+    headers["Retry-After"] = "60"
+
+    def _boom(*_a, **_k):
+        calls.append(1)
+        raise HTTPError(
+            "http://127.0.0.1:8000/transactions?limit=50",
+            429,
+            "Too Many Requests",
+            headers,
+            BytesIO(),
+        )
+
+    monkeypatch.setattr("dashboard.data_simulator.urlopen", _boom)
+    first = source.pull()
+    assert first[0][0].transaction_id == "tx-keep"
+    assert source.last_error == "RateLimited"
+    second = source.pull()
+    assert second[0][0].transaction_id == "tx-keep"
+    assert calls == [1]
 
 
 def test_app_uses_http_source_only() -> None:

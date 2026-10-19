@@ -1,28 +1,47 @@
 import React, { useState, useEffect } from 'react';
 import { X, Delete, Shield, Fingerprint, Lock } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
+import { pinFeedback } from '../../api/pin';
 import { sound } from '../../utils/audio';
 
 export const UpiPinModal = () => {
-  const { upiPinModal, setUpiPinModal, user, verifyPin } = useApp();
-  const { isOpen, amount, recipientName, purpose, onComplete, stepUp } = upiPinModal;
+  const { upiPinModal, setUpiPinModal, setRiskGateModal, user, verifyPin, lastScore } = useApp();
+  const { isOpen, amount, recipientName, onComplete, stepUp } = upiPinModal;
 
   const [pin, setPin] = useState('');
+  const [pinError, setPinError] = useState('');
+  const [failCount, setFailCount] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
   const PIN_LENGTH = 4;
 
   useEffect(() => {
     if (isOpen) {
       setPin('');
+      setPinError('');
+      setFailCount(0);
       setIsProcessing(false);
     }
   }, [isOpen]);
 
   if (!isOpen) return null;
 
+  const failPayment = () => {
+    setUpiPinModal({ isOpen: false, onComplete: null });
+    setRiskGateModal({
+      isOpen: true,
+      phase: 'block',
+      riskTier: 'BLOCK',
+      canonicalDecision: 'PIN',
+      payeeName: recipientName,
+      amount,
+      message: 'Payment failed after 3 incorrect OTP attempts.',
+    });
+  };
+
   const handleKeyPress = (digit) => {
     if (pin.length < PIN_LENGTH) {
       sound.playPinDigit();
+      setPinError('');
       const newPin = pin + digit;
       setPin(newPin);
 
@@ -48,17 +67,38 @@ export const UpiPinModal = () => {
 
   const submitPin = (finalPin) => {
     setIsProcessing(true);
-    Promise.resolve(verifyPin ? verifyPin(finalPin) : true).then((ok) => {
-      if (!ok) {
+    const challengeId = stepUp ? lastScore?.challenge_id || null : null;
+    Promise.resolve(verifyPin ? verifyPin(finalPin, challengeId) : { ok: true })
+      .then((result) => {
+        const feedback = pinFeedback(result);
+        if (feedback.ok) {
+          setUpiPinModal((prev) => ({ ...prev, isOpen: false }));
+          if (onComplete) {
+            onComplete(finalPin);
+          }
+          return;
+        }
+        const nextFails = failCount + 1;
+        setFailCount(nextFails);
+        if (feedback.failPayment || nextFails >= 3) {
+          failPayment();
+          return;
+        }
+        setPinError(feedback.message);
         setIsProcessing(false);
         setPin('');
-        return;
-      }
-      setUpiPinModal((prev) => ({ ...prev, isOpen: false }));
-      if (onComplete) {
-        onComplete(finalPin);
-      }
-    });
+      })
+      .catch(() => {
+        const nextFails = failCount + 1;
+        setFailCount(nextFails);
+        if (nextFails >= 3) {
+          failPayment();
+          return;
+        }
+        setPinError('Incorrect OTP');
+        setIsProcessing(false);
+        setPin('');
+      });
   };
 
   return (
@@ -102,6 +142,12 @@ export const UpiPinModal = () => {
             );
           })}
         </div>
+
+        {pinError && !isProcessing && (
+          <p className="text-sm text-rose-400 font-semibold mb-4" role="alert">
+            {pinError}
+          </p>
+        )}
 
         {isProcessing && (
           <div className="text-xs text-blue-400 font-semibold animate-pulse mb-4 flex items-center justify-center gap-2">

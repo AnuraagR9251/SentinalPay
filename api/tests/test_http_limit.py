@@ -29,6 +29,7 @@ def test_http_limit_returns_429(monkeypatch) -> None:
         statuses.append(posted.status_code)
     assert statuses[:3] == [200, 200, 200]
     assert statuses[3] == 429
+    assert posted.headers.get("retry-after") == "60"
 
 
 def test_http_limits_are_per_client_key(monkeypatch) -> None:

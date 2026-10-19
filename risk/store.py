@@ -940,6 +940,8 @@ class RiskStore:
             stored_pin = None if pin_row is None else (pin_row["pin_hash"] if not isinstance(pin_row, tuple) else pin_row[0])
             if stored_pin is None or not verify_secret(pin, stored_pin):
                 conn.commit()
+                if attempts >= max_attempts:
+                    return {"ok": False, "error": "locked"}
                 return {"ok": False, "error": "invalid_pin"}
             conn.execute(
                 "UPDATE challenges SET consumed_at = ? WHERE challenge_id = ?",

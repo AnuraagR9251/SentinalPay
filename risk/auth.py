@@ -49,7 +49,11 @@ def assert_http_rate_limit(client_key: str) -> None:
 
     count = get_store().cache.add(f"http:{client_key}", time.time(), _HTTP_WINDOW_S)
     if count > http_rate_limit_per_min():
-        raise HTTPException(status_code=429, detail="too many requests")
+        raise HTTPException(
+            status_code=429,
+            detail="too many requests",
+            headers={"Retry-After": str(int(_HTTP_WINDOW_S))},
+        )
 
 
 def protect_sensitive(request: Request) -> str:
@@ -174,7 +178,16 @@ def verify_pin_request(request: Request, pin: str, challenge_id: str | None) -> 
             raise HTTPException(status_code=401, detail=str(outcome.get("error") or "invalid challenge"))
         return outcome
 
-    user_id = require_session(request)
+    user_id = None
+    if token:
+        user_id = store.session_user(token)
+        if not user_id:
+            raise HTTPException(status_code=401, detail="invalid session")
+    elif require_login():
+        require_session(request)
+    else:
+        # ponytail: open sandbox has no session; all seed PINs are 1234.
+        user_id = "aarav@senitenial"
     throttle = pin_throttle_key(user_id, request)
     assert_pin_not_locked(store, throttle)
     if not store.verify_pin(user_id, pin):

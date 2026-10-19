@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 import strawberry
 from fastapi import HTTPException, Request
+from graphql import GraphQLError
 from strawberry.fastapi import GraphQLRouter
 from strawberry.scalars import JSON
 from strawberry.types import Info
@@ -153,18 +154,28 @@ def _request(info: Info):
     return getattr(ctx, "request", ctx)
 
 
+def _raise_http(exc: HTTPException) -> None:
+    status = int(exc.status_code)
+    raise GraphQLError(
+        str(exc.detail),
+        extensions={"code": status, "httpStatus": status},
+    ) from None
+
+
 def _session_user(info: Info) -> str:
     try:
         return require_session(_request(info))
     except HTTPException as exc:
-        raise ValueError(exc.detail) from exc
+        _raise_http(exc)
+        raise
 
 
 def _protect(info: Info) -> str:
     try:
         return protect_sensitive(_request(info))
     except HTTPException as exc:
-        raise ValueError(exc.detail) from exc
+        _raise_http(exc)
+        raise
 
 
 def _enforce_txn_user(info: Info, user_id: str) -> str:
@@ -174,7 +185,7 @@ def _enforce_txn_user(info: Info, user_id: str) -> str:
         return client_key
     session_user = _session_user(info)
     if session_user != user_id:
-        raise ValueError("user mismatch")
+        raise GraphQLError("user mismatch", extensions={"code": 403, "httpStatus": 403})
     return client_key
 
 
@@ -268,7 +279,7 @@ class Mutation:
         try:
             assert_login_not_locked(store, throttle)
         except HTTPException as exc:
-            raise ValueError(exc.detail) from exc
+            _raise_http(exc)
         if not store.verify_login(ident, password):
             note_login_failure(store, throttle)
             raise ValueError("invalid credentials")
@@ -280,7 +291,7 @@ class Mutation:
         try:
             logout_request(_request(info))
         except HTTPException as exc:
-            raise ValueError(exc.detail) from exc
+            _raise_http(exc)
         return True
 
     @strawberry.mutation
@@ -288,8 +299,17 @@ class Mutation:
         try:
             outcome = verify_pin_request(_request(info), pin, challenge_id)
         except HTTPException as exc:
-            raise ValueError(exc.detail) from exc
-        return PinPayload(ok=True, sandbox=True, note=outcome.get("note"))
+            detail = str(exc.detail or "")
+            code = detail.strip().lower().replace(" ", "_")
+            if exc.status_code in {401, 429} and (
+                code in {"invalid_pin", "locked", "unknown_challenge", "expired", "replay", "session_mismatch"}
+                or "too_many_pin" in code
+            ):
+                if "too_many_pin" in code:
+                    code = "locked"
+                return PinPayload(ok=False, sandbox=True, error=code)
+            _raise_http(exc)
+        return PinPayload(ok=True, sandbox=True, note=outcome.get("note"), error=None)
 
     @strawberry.mutation
     def score_transaction(self, info: Info, input: ScoreInput) -> ScorePayload:
@@ -366,7 +386,19 @@ class Mutation:
         )
 
 
-schema = strawberry.Schema(query=Query, mutation=Mutation)
+class SentinalSchema(strawberry.Schema):
+    def process_errors(self, errors, execution_context=None) -> None:
+        noisy = []
+        for error in errors:
+            status = (error.extensions or {}).get("httpStatus")
+            if status in (401, 403, 429):
+                continue
+            noisy.append(error)
+        if noisy:
+            super().process_errors(noisy, execution_context)
+
+
+schema = SentinalSchema(query=Query, mutation=Mutation)
 
 
 async def _context(request: Request, response=None) -> dict[str, Any]:

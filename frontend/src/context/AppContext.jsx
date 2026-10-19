@@ -524,20 +524,11 @@ export const AppProvider = ({ children }) => {
     }
   };
 
-  const verifyPin = async (pin) => {
-    const challengeId = lastScore?.challenge_id;
-    if (challengeId) {
-      try {
-        return await verifyPinViaGraphql(pin, authHeaders(), challengeId);
-      } catch {
-        return false;
-      }
-    }
-    if (!sessionToken) return true;
+  const verifyPin = async (pin, challengeId = null) => {
     try {
-      return await verifyPinViaGraphql(pin, authHeaders());
+      return await verifyPinViaGraphql(pin, authHeaders(), challengeId);
     } catch {
-      return false;
+      return { ok: false, error: 'invalid_pin' };
     }
   };
 
@@ -611,10 +602,10 @@ export const AppProvider = ({ children }) => {
           onComplete: () => {}
         });
       }
-    } catch {
+    } catch (err) {
       setRiskGateModal({
         isOpen: true,
-        phase: 'error',
+        phase: err?.rateLimited ? 'limited' : 'error',
         riskTier: null,
         riskScore: null,
         payeeName: body.payee_vpa,
