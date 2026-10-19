@@ -9,6 +9,7 @@ import {
   Moon,
   Sun,
   RotateCcw,
+  LogOut,
   CheckCircle2,
   Lock,
   ExternalLink,
@@ -25,7 +26,10 @@ export const ProfileSettingsModal = () => {
     setTheme,
     soundEnabled,
     setSoundEnabled,
-    resetToDemo
+    resetToDemo,
+    logout,
+    sessionToken,
+    authError
   } = useApp();
 
   const { isOpen } = profileModal;
@@ -122,6 +126,31 @@ export const ProfileSettingsModal = () => {
             </button>
           </div>
 
+          {sessionToken ? (
+            <div className="p-3 rounded-2xl bg-slate-800/60 border border-slate-700/60 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <LogOut className="w-4 h-4 text-slate-300" />
+                <div>
+                  <p className="text-xs font-semibold text-white">Sign out</p>
+                  <p className="text-[10px] text-slate-400">Revoke this sandbox session on the server</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  const next = await logout();
+                  if (!next.authError) {
+                    setProfileModal({ isOpen: false });
+                  }
+                }}
+                className="px-3 py-1 rounded-xl bg-slate-700 hover:bg-slate-600 text-white text-xs font-semibold transition-colors cursor-pointer"
+              >
+                Sign out
+              </button>
+            </div>
+          ) : null}
+          {authError ? <p className="text-[11px] text-rose-400 px-1">{authError}</p> : null}
+
           {/* Reset Demo Data */}
           <div className="p-3 rounded-2xl bg-slate-800/60 border border-slate-700/60 flex items-center justify-between">
             <div className="flex items-center gap-2.5">
@@ -132,9 +161,12 @@ export const ProfileSettingsModal = () => {
               </div>
             </div>
             <button
-              onClick={() => {
-                if (confirm('Reset all demo transactions, scratch cards and balances to default?')) {
-                  resetToDemo();
+              onClick={async () => {
+                if (!confirm('Reset all demo transactions, scratch cards and balances to default?')) {
+                  return;
+                }
+                const next = await resetToDemo();
+                if (!next?.authError) {
                   setProfileModal({ isOpen: false });
                 }
               }}

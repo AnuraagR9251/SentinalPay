@@ -257,7 +257,7 @@ def test_out_of_range_latitude_is_rejected() -> None:
         score_transaction(_txn(lat=200.0), _history(), _profile())
 
 
-def test_partial_payee_coordinates_are_rejected() -> None:
+def test_partial_payee_lat_without_lon_is_rejected() -> None:
     current = _txn()
     current["payee_lat"] = 19.07
     current["payee_lon"] = None
@@ -265,11 +265,11 @@ def test_partial_payee_coordinates_are_rejected() -> None:
         score_transaction(current, _history(), _profile())
 
 
-def test_partial_payee_coordinates_are_rejected() -> None:
+def test_partial_payee_lon_without_lat_is_rejected() -> None:
     current = _txn()
-    current["payee_lat"] = 19.07
-    current["payee_lon"] = None
-    with pytest.raises(ScoringValidationError, match="payee_lat"):
+    current["payee_lat"] = None
+    current["payee_lon"] = 72.87
+    with pytest.raises(ScoringValidationError, match="payee_lon"):
         score_transaction(current, _history(), _profile())
 
 

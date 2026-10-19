@@ -85,6 +85,8 @@ export async function scoreViaGraphql(input, headers = {}) {
   return toRestShape(data.scoreTransaction);
 }
 
+export { logoutViaRest } from './session.js';
+
 export async function loginViaGraphql(userId, password) {
   const data = await graphql(
     `mutation Login($userId: String!, $password: String!) {

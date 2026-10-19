@@ -14,6 +14,7 @@ import {
   DEMO_PROFILES
 } from '../data/mockData';
 import { loginViaGraphql, scoreViaGraphql, verifyPinViaGraphql } from '../api/graphql';
+import { applyClientLogout, demoResetImpliesSuccess, logoutViaRest } from '../api/session';
 
 const AppContext = createContext();
 
@@ -622,8 +623,18 @@ export const AppProvider = ({ children }) => {
     }
   };
 
-  // Reset demo data
-  const resetToDemo = () => {
+  const logout = async () => {
+    const token = sessionToken;
+    const result = token ? await logoutViaRest(token) : { revoked: true, error: null };
+    const next = applyClientLogout(localStorage, STORAGE_KEY, result);
+    setSessionToken(next.sessionToken);
+    setLastScore(next.lastScore);
+    setAuthError(next.authError);
+    return next;
+  };
+
+  const resetToDemo = async () => {
+    const next = await logout();
     localStorage.clear();
     setUser(cloneSeed(INITIAL_USER));
     setBanks(cloneSeed(INITIAL_BANKS));
@@ -633,7 +644,13 @@ export const AppProvider = ({ children }) => {
     setRewards(cloneSeed(INITIAL_REWARDS));
     setTransactions(cloneSeed(INITIAL_TRANSACTIONS));
     setSplits(cloneSeed(INITIAL_SPLIT_GROUPS));
-    sound.playSuccessChime();
+    setSessionToken('');
+    setLastScore(null);
+    setAuthError(next.authError);
+    if (demoResetImpliesSuccess(next)) {
+      sound.playSuccessChime();
+    }
+    return next;
   };
 
   return (
@@ -692,6 +709,7 @@ export const AppProvider = ({ children }) => {
         toggleCardFreeze,
         addSplitGroup,
         resetToDemo,
+        logout,
         sessionToken,
         authError,
         lastScore,
