@@ -166,12 +166,20 @@ def verify_pin_request(request: Request, pin: str, challenge_id: str | None) -> 
 
 
 def require_order_auth(request: Request) -> None:
-    """Creating provider orders is never anonymous."""
+    """Creating provider orders is never anonymous.
+
+    `SENTINALPAY_REQUIRE_LOGIN=1` always requires a valid bearer session, same
+    as score/evaluate. `SENTINALPAY_API_KEY`, when set, is an additional
+    process gate.
+
+    Service-to-service exception: `REQUIRE_LOGIN=0` and a valid API key may
+    create an order with no user session. That key is not end-user auth.
+    With login off and no API key, a valid session is still required.
+    """
     expected = os.getenv("SENTINALPAY_API_KEY", "").strip()
     if expected:
         authenticate_request(request)
+        if require_login():
+            require_session(request)
         return
-    if bearer_token(request):
-        require_session(request)
-        return
-    raise HTTPException(status_code=401, detail="order creation requires login or SENTINALPAY_API_KEY")
+    require_session(request)

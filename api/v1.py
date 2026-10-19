@@ -79,9 +79,12 @@ def evaluate(payload: EvaluateRequest, request: Request, client_key: str = Depen
 def review(
     transaction_id: str,
     payload: ReviewRequest,
+    request: Request,
     _key: str = Depends(authenticate_request),
 ) -> dict[str, Any]:
     assert_http_rate_limit(_key)
+    if require_login():
+        require_session(request)
     try:
         return get_store().submit_review(transaction_id.strip(), payload.decision, payload.reason.strip())
     except KeyError as exc:
@@ -89,8 +92,14 @@ def review(
 
 
 @router.get("/reviews")
-def reviews(status: str = "PENDING", _key: str = Depends(authenticate_request)) -> list[dict[str, Any]]:
+def reviews(
+    request: Request,
+    status: str = "PENDING",
+    _key: str = Depends(authenticate_request),
+) -> list[dict[str, Any]]:
     assert_http_rate_limit(_key)
+    if require_login():
+        require_session(request)
     if status != "PENDING":
         return []
     return get_store().pending_reviews()
