@@ -1,5 +1,7 @@
 """Phase 4 login and PIN on the existing FastAPI."""
 
+import json
+
 from fastapi.testclient import TestClient
 
 from api.main import app
@@ -123,6 +125,78 @@ def test_challenge_requires_session_when_login_on(monkeypatch) -> None:
     assert denied.status_code == 401
 
 
+def test_logout_revokes_session(monkeypatch) -> None:
+    monkeypatch.setenv("SENTINALPAY_REQUIRE_LOGIN", "1")
+    client = TestClient(app)
+    assert client.post("/logout").status_code == 401
+    assert client.post("/logout", headers={"Authorization": "Bearer not-a-session"}).status_code == 401
+    token = client.post("/login", json={"user_id": "aarav@senitenial", "password": "demo123"}).json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    assert client.post("/logout", headers=headers).status_code == 200
+    scored = client.post(
+        "/score",
+        headers=headers,
+        json={
+            "transaction_id": "auth-logged-out-1",
+            "amount": 250,
+            "payee_vpa": "priya@oksbi",
+            "user_id": "aarav@senitenial",
+            "timestamp": "2026-09-28T11:00:00+00:00",
+            "payer_location": {"lat": 12.9716, "lon": 77.5946},
+            "is_new_payee": False,
+            "purpose": "dining",
+        },
+    )
+    assert scored.status_code == 401
+
+
+def test_score_rejects_other_user_when_login_on(monkeypatch) -> None:
+    monkeypatch.setenv("SENTINALPAY_REQUIRE_LOGIN", "1")
+    client = TestClient(app)
+    token = client.post("/login", json={"user_id": "aarav@senitenial", "password": "demo123"}).json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    mismatch = client.post(
+        "/score",
+        headers=headers,
+        json={
+            "transaction_id": "auth-spoof-1",
+            "amount": 250,
+            "payee_vpa": "priya@oksbi",
+            "user_id": "priya@senitenial",
+            "timestamp": "2026-09-28T11:00:00+00:00",
+            "payer_location": {"lat": 12.9716, "lon": 77.5946},
+            "is_new_payee": False,
+            "purpose": "dining",
+        },
+    )
+    assert mismatch.status_code == 403
+    own = client.post(
+        "/score",
+        headers=headers,
+        json={
+            "transaction_id": "auth-own-1",
+            "amount": 250,
+            "payee_vpa": "priya@oksbi",
+            "user_id": "aarav@senitenial",
+            "timestamp": "2026-09-28T11:00:00+00:00",
+            "payer_location": {"lat": 12.9716, "lon": 77.5946},
+            "is_new_payee": False,
+            "purpose": "dining",
+        },
+    )
+    assert own.status_code == 200
+
+
+def test_pin_requires_api_key_when_configured(monkeypatch) -> None:
+    monkeypatch.setenv("SENTINALPAY_API_KEY", "lab-secret")
+    client = TestClient(app)
+    token = client.post("/login", json={"user_id": "aarav@senitenial", "password": "demo123"}).json()["token"]
+    session = {"Authorization": f"Bearer {token}"}
+    assert client.post("/pin/verify", headers=session, json={"pin": "1234"}).status_code == 401
+    both = {**session, "X-API-Key": "lab-secret"}
+    assert client.post("/pin/verify", headers=both, json={"pin": "1234"}).status_code == 200
+
+
 def test_evaluate_rejects_other_user_when_login_on(monkeypatch) -> None:
     monkeypatch.setenv("SENTINALPAY_REQUIRE_LOGIN", "1")
     client = TestClient(app)
@@ -172,6 +246,7 @@ def test_api_key_required_on_score_evaluate_feed_and_graphql(monkeypatch) -> Non
     }
     assert client.post("/score", json=score_body).status_code == 401
     assert client.post("/score", json=score_body, headers={"X-API-Key": "nope"}).status_code == 401
+    assert client.post("/score", json=score_body, headers={"X-API-Key": "x"}).status_code == 401
     assert client.get("/transactions").status_code == 401
     assert client.post("/api/v1/transactions/evaluate", json=eval_body).status_code == 401
     assert client.get("/api/v1/reviews").status_code == 401
@@ -242,3 +317,16 @@ def test_health_reports_open_sandbox(monkeypatch) -> None:
     locked = client.get("/health").json()
     assert locked["open_sandbox"] is False
     assert locked.get("auth_warning") in (None, "")
+
+
+def test_health_and_ready_omit_secrets(monkeypatch) -> None:
+    monkeypatch.setenv("SENTINALPAY_API_KEY", "super-secret-key")
+    monkeypatch.setenv("RAZORPAY_WEBHOOK_SECRET", "whsec-secret")
+    client = TestClient(app)
+    for path in ("/health", "/ready"):
+        body = json.dumps(client.get(path).json()).lower()
+        assert "super-secret-key" not in body
+        assert "whsec-secret" not in body
+        assert "demo123" not in body
+        assert "bearer" not in body
+        assert "authorization" not in body

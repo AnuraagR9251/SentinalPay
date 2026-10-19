@@ -79,6 +79,28 @@ def test_reviews_require_session_when_login_on(monkeypatch) -> None:
         assert submitted.status_code == 404
 
 
+def test_reviews_any_logged_in_demo_user_can_operate_queue(monkeypatch) -> None:
+    """No admin role: another seeded account can list/submit. Documented demo limit."""
+    monkeypatch.setenv("SENTINALPAY_REQUIRE_LOGIN", "1")
+    monkeypatch.setenv("SENTINALPAY_DECIDE_ALLOW_MAX", "0")
+    monkeypatch.setenv("SENTINALPAY_DECIDE_REVIEW_MAX", "100")
+    client = TestClient(app)
+    aarav = _login(client)
+    evaluated = _eval(client, "rev-any-user-1", {"Authorization": f"Bearer {aarav}"})
+    assert evaluated.status_code == 200
+    priya = client.post("/login", json={"user_id": "priya@senitenial", "password": "demo123"}).json()["token"]
+    headers = {"Authorization": f"Bearer {priya}"}
+    listed = client.get("/api/v1/reviews", headers=headers)
+    assert listed.status_code == 200
+    if evaluated.json()["decision"] == "REVIEW":
+        submitted = client.post(
+            f"/api/v1/reviews/{evaluated.json()['transaction_id']}",
+            headers=headers,
+            json={"decision": "APPROVED", "reason": "other demo user"},
+        )
+        assert submitted.status_code == 200
+
+
 def test_reviews_need_key_and_session_when_both_set(monkeypatch) -> None:
     monkeypatch.setenv("SENTINALPAY_REQUIRE_LOGIN", "1")
     monkeypatch.setenv("SENTINALPAY_API_KEY", "lab-secret")

@@ -21,7 +21,13 @@ def authenticate_request(request: Request) -> str:
     presented = (request.headers.get("X-API-Key") or "").strip()
     if not expected:
         return presented or (request.client.host if request.client else "local")
-    if not presented or not hmac.compare_digest(presented, expected):
+    if not presented:
+        raise HTTPException(status_code=401, detail="invalid api key")
+    try:
+        matched = hmac.compare_digest(presented, expected)
+    except (TypeError, ValueError):
+        matched = False
+    if not matched:
         raise HTTPException(status_code=401, detail="invalid api key")
     return "key"
 
@@ -91,6 +97,18 @@ def require_session(request: Request) -> str:
     if not user_id:
         raise HTTPException(status_code=401, detail="invalid session")
     return user_id
+
+
+def logout_request(request: Request) -> dict[str, Any]:
+    """Revoke the presented bearer session. Missing/invalid token stays 401."""
+    from risk.store import get_store
+
+    token = bearer_token(request)
+    if not token:
+        raise HTTPException(status_code=401, detail="login required")
+    require_session(request)
+    get_store().revoke_session(token)
+    return {"ok": True}
 
 
 def login_throttle_key(user_id: str, request: Request) -> str:

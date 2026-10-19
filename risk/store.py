@@ -809,6 +809,17 @@ class RiskStore:
                 return None
         return row["user_id"] if not isinstance(row, tuple) else row[0]
 
+    def revoke_session(self, token: str) -> bool:
+        from risk.passwords import hash_token
+
+        if not token:
+            return False
+        digest = hash_token(token)
+        with _LOCK, self._connect() as conn:
+            cur = conn.execute("DELETE FROM sessions WHERE token = ?", (digest,))
+            conn.commit()
+            return int(cur.rowcount or 0) > 0
+
     def revoke_sessions(self, user_id: str) -> None:
         with _LOCK, self._connect() as conn:
             conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))

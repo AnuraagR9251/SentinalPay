@@ -18,6 +18,7 @@ from risk.auth import (
     assert_login_not_locked,
     bearer_token,
     login_throttle_key,
+    logout_request,
     note_login_failure,
     open_access_warning,
     protect_sensitive,
@@ -273,6 +274,14 @@ class Mutation:
             raise ValueError("invalid credentials")
         token = store.create_session(ident)
         return LoginPayload(token=token, user_id=ident)
+
+    @strawberry.mutation
+    def logout(self, info: Info) -> bool:
+        try:
+            logout_request(_request(info))
+        except HTTPException as exc:
+            raise ValueError(exc.detail) from exc
+        return True
 
     @strawberry.mutation
     def verify_pin(self, info: Info, pin: str, challenge_id: Optional[str] = None) -> PinPayload:

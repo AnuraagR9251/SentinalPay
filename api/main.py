@@ -30,6 +30,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from api.compat import legacy_fields_from_canonical, pipeline_payload_from_score
+from api.httpbody import read_body_capped, webhook_max_bytes
 from api.graphql import graphql_router
 from api.v1 import router as v1_router
 from detection.privacy import mask_identifier
@@ -39,6 +40,7 @@ from risk.auth import (
     authenticate_request,
     bearer_token,
     login_throttle_key,
+    logout_request,
     note_login_failure,
     open_access_warning,
     protect_sensitive,
@@ -479,6 +481,11 @@ def login(payload: LoginRequest, request: Request) -> dict[str, Any]:
     return {"token": token, "user_id": user_id}
 
 
+@app.post("/logout")
+def logout(request: Request) -> dict[str, Any]:
+    return logout_request(request)
+
+
 @app.post("/pin/verify")
 def verify_pin(payload: PinRequest, request: Request) -> dict[str, Any]:
     return verify_pin_request(request, payload.pin, payload.challenge_id)
@@ -525,10 +532,7 @@ async def razorpay_webhook(request: Request) -> dict[str, Any]:
     adapter = get_razorpay_adapter()
     if not adapter.webhook_secret:
         raise HTTPException(status_code=503, detail="RAZORPAY_WEBHOOK_SECRET not configured")
-    max_bytes = max(1024, int(os.getenv("SENTINALPAY_WEBHOOK_MAX_BYTES", "65536") or 65536))
-    body = await request.body()
-    if len(body) > max_bytes:
-        raise HTTPException(status_code=413, detail="payload too large")
+    body = await read_body_capped(request, webhook_max_bytes())
     outcome = adapter.ingest_event(
         body=body,
         signature=request.headers.get("X-Razorpay-Signature"),

@@ -240,3 +240,46 @@ def test_graphql_authenticated_score_and_evaluate(monkeypatch) -> None:
     evaluate = _gql(client, EVAL_MUTATION, _eval_vars(transactionId="gql-ok-eval"), headers=headers)
     assert score.json()["data"]["scoreTransaction"]["transactionId"] == "gql-ok-score"
     assert evaluate.json()["data"]["evaluateTransaction"]["transactionId"] == "gql-ok-eval"
+
+
+def test_graphql_unauth_does_not_score(monkeypatch) -> None:
+    monkeypatch.setenv("SENTINALPAY_REQUIRE_LOGIN", "1")
+    called: list[int] = []
+
+    def _boom(*_args, **_kwargs):
+        called.append(1)
+        raise AssertionError("pipeline must not run before auth")
+
+    monkeypatch.setattr("api.graphql.run_pipeline", _boom)
+    client = TestClient(app)
+    posted = _gql(client, SCORE_MUTATION, _score_vars(transactionId="gql-no-score"))
+    assert posted.json().get("errors")
+    assert posted.json().get("data") is None or posted.json()["data"]["scoreTransaction"] is None
+    assert called == []
+
+
+def test_graphql_transactions_require_session(monkeypatch) -> None:
+    monkeypatch.setenv("SENTINALPAY_REQUIRE_LOGIN", "1")
+    client = TestClient(app)
+    denied = _gql(client, "query { transactions { transactionId } }")
+    assert denied.json().get("errors")
+    token = client.post("/login", json={"user_id": "aarav@senitenial", "password": "demo123"}).json()["token"]
+    ok = _gql(
+        client,
+        "query { transactions { transactionId } }",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert ok.json()["data"]["transactions"] is not None
+
+
+def test_graphql_logout_revokes_token(monkeypatch) -> None:
+    monkeypatch.setenv("SENTINALPAY_REQUIRE_LOGIN", "1")
+    client = TestClient(app)
+    token = client.post("/login", json={"user_id": "aarav@senitenial", "password": "demo123"}).json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    logged_out = _gql(client, "mutation { logout }", headers=headers)
+    assert logged_out.json()["data"]["logout"] is True
+    scored = _gql(client, SCORE_MUTATION, _score_vars(transactionId="gql-after-logout"), headers=headers)
+    assert scored.json().get("errors")
+    missing = _gql(client, "mutation { logout }")
+    assert missing.json().get("errors")
