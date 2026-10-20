@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "oxlint",
-    "test": "node --test src/api/session.test.js src/api/http.test.js src/api/pin.test.js src/api/scoreDisplay.test.js",
+    "test": "node --test src/api/session.test.js src/api/http.test.js src/api/pin.test.js src/api/scoreDisplay.test.js src/api/evaluateShape.test.js src/lab/scenarios.test.js",
     "preview": "vite preview"
   },
   "dependencies": {

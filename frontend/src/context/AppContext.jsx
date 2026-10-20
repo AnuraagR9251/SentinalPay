@@ -15,6 +15,7 @@ import {
 } from '../data/mockData';
 import { loginViaGraphql, scoreViaGraphql, verifyPinViaGraphql } from '../api/graphql';
 import { applyClientLogout, demoResetImpliesSuccess, logoutViaRest } from '../api/session';
+import { runLabScenario as executeLabScenario } from '../lab/runScenario';
 
 const AppContext = createContext();
 
@@ -154,6 +155,7 @@ export const AppProvider = ({ children }) => {
   const [sessionToken, setSessionToken] = useState(() => localStorage.getItem(`${STORAGE_KEY}_token`) || '');
   const [authError, setAuthError] = useState('');
   const [lastScore, setLastScore] = useState(null);
+  const [lastLab, setLastLab] = useState(null);
   const requireLogin = import.meta.env.VITE_REQUIRE_LOGIN === '1';
 
   const payerLocation = () => {
@@ -538,89 +540,16 @@ export const AppProvider = ({ children }) => {
     }
   };
 
-  const runLabScenario = async (id) => {
-    const now = new Date();
-    const location = payerLocation();
-    const base = {
-      user_id: user.upiId,
-      timestamp: now.toISOString(),
-      payer_location: location,
-      device_id: user.deviceId,
-      is_new_payee: id === 'new_payee'
-    };
-    const payloads = {
-      grocery: { ...base, transaction_id: `lab-groc-${Date.now()}`, amount: 240, payee_vpa: 'kirana.lab@oksbi', purpose: 'groceries' },
-      new_payee: { ...base, transaction_id: `lab-new-${Date.now()}`, amount: 48000, payee_vpa: `stranger.${Date.now()}@oksbi`, purpose: 'p2p_transfer' },
-      velocity: { ...base, transaction_id: `lab-vel-${Date.now()}`, amount: 900, payee_vpa: 'burst.lab@oksbi', purpose: 'p2p_transfer' },
-      replay: { ...base, transaction_id: `lab-replay-fixed-${user.upiId}`, amount: 500, payee_vpa: 'replay.lab@oksbi', purpose: 'dining' }
-    };
-    const body = payloads[id];
-    if (!body) return;
-    const toGql = (item) => ({
-      transactionId: item.transaction_id,
-      amount: item.amount,
-      payeeVpa: item.payee_vpa,
-      userId: item.user_id,
-      timestamp: item.timestamp,
-      payerLocation: item.payer_location,
-      deviceId: item.device_id || null,
-      isNewPayee: Boolean(item.is_new_payee),
-      purpose: item.purpose
+  const runLabScenario = async (id, extras = {}) => {
+    const out = await executeLabScenario(id, {
+      headers: authHeaders(),
+      sessionUser: user.upiId,
+      requireLogin,
+      threshold: extras.threshold,
     });
-    try {
-      if (id === 'velocity') {
-        for (let i = 0; i < 5; i += 1) {
-          await scoreViaGraphql(
-            toGql({ ...body, transaction_id: `lab-vel-${Date.now()}-${i}`, amount: 900 + i }),
-            authHeaders()
-          );
-        }
-      }
-      const data = await scoreViaGraphql(toGql(body), authHeaders());
-      setLastScore(data);
-      const phase = data.risk_tier === 'BLOCK'
-        ? 'block'
-        : data.risk_tier === 'STEP_UP'
-          ? 'scanning'
-          : data.risk_tier === 'HOLD' || data.canonical_decision === 'REVIEW'
-            ? 'hold'
-            : 'scanning';
-      setRiskGateModal({
-        isOpen: true,
-        phase,
-        riskTier: data.risk_tier,
-        riskScore: data.canonical_risk_score,
-        canonicalRiskScore: data.canonical_risk_score,
-        pXgb: data.P_xgb,
-        mlCalibrated: data.ml_calibrated_for_upi,
-        canonicalDecision: data.canonical_decision,
-        payeeName: body.payee_vpa,
-        amount: body.amount
-      });
-      if (data.risk_tier === 'ALLOW') {
-        setRiskGateModal((prev) => ({ ...prev, isOpen: false, phase: 'idle' }));
-      }
-      if (data.risk_tier === 'STEP_UP') {
-        setRiskGateModal((prev) => ({ ...prev, isOpen: false, phase: 'idle' }));
-        setUpiPinModal({
-          isOpen: true,
-          stepUp: true,
-          amount: body.amount,
-          recipientName: body.payee_vpa,
-          purpose: 'Sentinel step-up',
-          onComplete: () => {}
-        });
-      }
-    } catch (err) {
-      setRiskGateModal({
-        isOpen: true,
-        phase: err?.rateLimited ? 'limited' : 'error',
-        riskTier: null,
-        riskScore: null,
-        payeeName: body.payee_vpa,
-        amount: body.amount
-      });
-    }
+    setLastLab(out);
+    setLastScore(out.candidate);
+    return out;
   };
 
   const logout = async () => {
@@ -629,6 +558,7 @@ export const AppProvider = ({ children }) => {
     const next = applyClientLogout(localStorage, STORAGE_KEY, result);
     setSessionToken(next.sessionToken);
     setLastScore(next.lastScore);
+    setLastLab(null);
     setAuthError(next.authError);
     return next;
   };
@@ -646,6 +576,7 @@ export const AppProvider = ({ children }) => {
     setSplits(cloneSeed(INITIAL_SPLIT_GROUPS));
     setSessionToken('');
     setLastScore(null);
+    setLastLab(null);
     setAuthError(next.authError);
     if (demoResetImpliesSuccess(next)) {
       sound.playSuccessChime();
@@ -713,6 +644,7 @@ export const AppProvider = ({ children }) => {
         sessionToken,
         authError,
         lastScore,
+        lastLab,
         requireLogin,
         switchDemoUser,
         loginWithPassword,

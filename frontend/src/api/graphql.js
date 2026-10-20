@@ -1,6 +1,6 @@
 import { graphqlFailure } from './http.js';
 
-const SCORE_API = import.meta.env.VITE_SCORE_API_URL || 'http://localhost:8000';
+const SCORE_API = import.meta.env?.VITE_SCORE_API_URL || 'http://localhost:8000';
 
 const SCORE_FIELDS = `
   transactionId
@@ -89,6 +89,82 @@ export async function scoreViaGraphql(input, headers = {}) {
     headers
   );
   return toRestShape(data.scoreTransaction);
+}
+
+function evaluateInput(row) {
+  const input = {
+    userId: row.userId,
+    amount: row.amount,
+    currency: row.currency || 'INR',
+    merchantId: row.merchantId,
+    merchantCategory: row.merchantCategory || null,
+    transactionId: row.transactionId,
+    timestamp: row.timestamp,
+    deviceId: row.deviceId || null,
+  };
+  if (row.latitude != null && row.longitude != null) {
+    input.latitude = row.latitude;
+    input.longitude = row.longitude;
+  }
+  return input;
+}
+
+export function shapeEvaluateResult(node) {
+  const payload = node?.payload && typeof node.payload === 'object' ? node.payload : {};
+  const ml = payload.ml && typeof payload.ml === 'object' ? payload.ml : {};
+  const exp = payload.experimental && typeof payload.experimental === 'object' ? payload.experimental : {};
+  const rules = payload.rules && typeof payload.rules === 'object' ? payload.rules : { triggered_rules: [] };
+  return {
+    transaction_id: node.transactionId,
+    user_id: node.userId,
+    canonical_decision: node.decision,
+    canonical_risk_score: node.riskScore,
+    risk_tier: node.action === 'STEP_UP' ? 'STEP_UP' : node.decision === 'BLOCK' ? 'BLOCK' : node.decision === 'ALLOW' ? 'ALLOW' : 'HOLD',
+    action: node.action,
+    location_baseline: node.locationBaseline || payload.location_baseline || null,
+    ml_available: node.modelAvailable ?? ml.available ?? null,
+    P_xgb: ml.available ? ml.fraud_probability : null,
+    ml_calibrated_for_upi: ml.calibrated_for_upi ?? false,
+    ml_evaluation: ml.evaluation || null,
+    reason_codes: node.reasonCodes || payload.reason_codes || [],
+    policy_version: node.policyVersion || payload.policy_version || null,
+    rules,
+    behavior: payload.behavior || { anomalies: [] },
+    components: payload.components || null,
+    experimental: {
+      ...exp,
+      note: exp.note || 'experimental; not blended into canonical ALLOW/REVIEW/BLOCK',
+    },
+    P_ae: exp.ae_available ? exp.P_ae : null,
+    P_graph: exp.graph_available ? exp.P_graph : null,
+    structuring_flag: exp.structuring_flag ?? null,
+    ae_available: Boolean(exp.ae_available),
+    graph_available: Boolean(exp.graph_available),
+    idempotent: Boolean(payload.idempotent),
+    payload,
+  };
+}
+
+export async function evaluateViaGraphql(row, headers = {}) {
+  const data = await graphql(
+    `mutation Eval($input: EvaluateInput!) {
+      evaluateTransaction(input: $input) {
+        transactionId
+        userId
+        riskScore
+        decision
+        action
+        locationBaseline
+        modelAvailable
+        reasonCodes
+        policyVersion
+        payload
+      }
+    }`,
+    { input: evaluateInput(row) },
+    headers
+  );
+  return shapeEvaluateResult(data.evaluateTransaction);
 }
 
 export { logoutViaRest } from './session.js';
