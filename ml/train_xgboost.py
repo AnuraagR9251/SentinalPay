@@ -14,6 +14,7 @@ Evaluation is synthetic-data only until labeled UPI history exists.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -23,27 +24,40 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 import joblib
 import numpy as np
 import pandas as pd
 from imblearn.over_sampling import SMOTE
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import (
-    average_precision_score,
-    brier_score_loss,
-    f1_score,
-    precision_recall_curve,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-)
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
+from ml.xgb_eval import (  # noqa: E402
+    THRESHOLD_SELECTION,
+    assert_temporal_order,
+    attach_eval_ids,
+    best_threshold,
+    brier_and_reliability,
+    chronological_split,
+    chronological_thirds,
+    constant_features,
+    constant_fraud_metrics,
+    feature_export_table,
+    hour_of_day_analysis,
+    leakage_correlations,
+    pack_clf_metrics,
+    prediction_table,
+    recall_at_fpr,
+    review_operating_point,
+    split_report,
+    temporal_subwindows,
+    user_disjoint_thirds,
+    write_prediction_table,
+)
 from risk.ml_layer import LIVE_FEATURE_NAMES, engineer_features  # noqa: E402
 from risk.normalize import NormalizationError, normalize_transaction  # noqa: E402
 
@@ -56,6 +70,8 @@ UPI_PATH = DATASET_DIR / "upi_transactions_2025.csv"
 MODEL_DIR = REPO_ROOT / "ml" / "models"
 MODEL_PATH = MODEL_DIR / "xgboost_model.pkl"
 METRICS_PATH = MODEL_DIR / "xgboost_metrics.json"
+ARTIFACT_DIR = REPO_ROOT / "ml" / "artifacts" / "xgb_experiments"
+EVAL_REPRO_DIR = ARTIFACT_DIR / "eval_repro"
 
 CHUNK_SIZE = 250_000
 LEGIT_USER_CAP = 2_500
@@ -95,7 +111,15 @@ def _walk_sequence(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         vector = _vector_row(event["txn"], history)
         if vector is None:
             continue
-        rows.append({**vector, "_y": event["y"], "_ts": event["txn"]["timestamp"]})
+        rows.append(
+            {
+                **vector,
+                "_y": event["y"],
+                "_ts": event["txn"]["timestamp"],
+                "_user": event["txn"].get("user_id") or "unknown",
+                "_seq": len(history),
+            }
+        )
         history.append(_as_history_row(event["txn"]))
     return rows
 
@@ -146,7 +170,10 @@ def _load_paysim_sequences() -> dict[str, list[dict[str, Any]]]:
             if user_id not in fraud_users and len(sequences[user_id]) >= LEGIT_SEQ_CAP:
                 continue
             txn = {
-                "transaction_id": f"ps_{abs(hash(user_id)) % 10_000_000}_{int(rec.step)}_{len(sequences[user_id])}",
+                "transaction_id": (
+                    f"ps_{hashlib.sha256(user_id.encode('utf-8')).hexdigest()[:8]}"
+                    f"_{int(rec.step)}_{len(sequences[user_id])}"
+                ),
                 "user_id": user_id,
                 "amount": amount,
                 "payee_vpa": f"{rec.nameDest}@ps",
@@ -207,33 +234,8 @@ def build_feature_frames() -> tuple[pd.DataFrame, pd.DataFrame]:
     return paysim, upi
 
 
-def chronological_split(frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    ordered = frame.sort_values("_ts", kind="mergesort").reset_index(drop=True)
-    cut = int(len(ordered) * 0.8)
-    if cut < 1 or cut >= len(ordered):
-        raise RuntimeError("not enough rows for an 80/20 chronological split")
-    return ordered.iloc[:cut], ordered.iloc[cut:]
-
-
-def chronological_thirds(frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Earlier → train, next → tune, newest → final eval."""
-    ordered = frame.sort_values("_ts", kind="mergesort").reset_index(drop=True)
-    n = len(ordered)
-    a, b = int(n * 0.6), int(n * 0.8)
-    if a < 1 or b <= a or b >= n:
-        raise RuntimeError("not enough rows for a 60/20/20 chronological split")
-    return ordered.iloc[:a], ordered.iloc[a:b], ordered.iloc[b:]
-
-
 def _leakage_correlations(frame: pd.DataFrame, cols: list[str]) -> dict[str, float]:
-    y = frame["_y"].to_numpy(dtype=np.float64)
-    out: dict[str, float] = {}
-    for col in cols:
-        series = frame[col].to_numpy(dtype=np.float64)
-        if float(np.std(series)) < 1e-12 or len(np.unique(y)) < 2:
-            continue
-        out[col] = float(np.corrcoef(series, y)[0, 1])
-    return out
+    return leakage_correlations(frame, cols)
 
 
 def _rule_scores(frame: pd.DataFrame) -> np.ndarray:
@@ -252,88 +254,11 @@ def _fit_logreg(x_train: np.ndarray, y_train: np.ndarray, x_out: np.ndarray) -> 
 
 
 def _best_threshold(y_true: np.ndarray, scores: np.ndarray) -> float:
-    precision, recall, thresholds = precision_recall_curve(y_true, scores)
-    if thresholds.size == 0:
-        return 0.5
-    f1 = np.zeros(thresholds.size)
-    for i, thresh in enumerate(thresholds):
-        f1[i] = 0.0 if precision[i] + recall[i] == 0 else 2 * precision[i] * recall[i] / (precision[i] + recall[i])
-    return float(thresholds[int(np.argmax(f1))])
+    return best_threshold(y_true, scores)
 
 
-def review_operating_point(y_true: np.ndarray, scores: np.ndarray, review_at: float) -> dict[str, float]:
-    """Review/block if score >= review_at. Reports fraud catch vs extra reviews."""
-    flagged = scores >= review_at
-    fraud = y_true == 1
-    legit = y_true == 0
-    caught = int(np.sum(flagged & fraud))
-    fraud_n = int(np.sum(fraud))
-    legit_n = int(np.sum(legit))
-    extra = int(np.sum(flagged & legit))
-    return {
-        "review_at": float(review_at),
-        "fraud_caught": caught,
-        "fraud_recall": caught / fraud_n if fraud_n else 0.0,
-        "legit_review_rate": extra / legit_n if legit_n else 0.0,
-        "precision": caught / int(np.sum(flagged)) if int(np.sum(flagged)) else 0.0,
-    }
-
-
-def recall_at_fpr(y_true: np.ndarray, scores: np.ndarray, fpr_target: float = 0.05) -> dict[str, float]:
-    """Highest recall whose false-positive rate is at most fpr_target."""
-    legit = y_true == 0
-    fraud = y_true == 1
-    legit_n = int(np.sum(legit))
-    fraud_n = int(np.sum(fraud))
-    best = {"fpr_target": float(fpr_target), "threshold": 1.0, "fpr": 0.0, "recall": 0.0}
-    if legit_n == 0 or scores.size == 0:
-        return best
-    for thresh in np.unique(scores):
-        flagged = scores >= thresh
-        fpr = float(np.sum(flagged & legit) / legit_n)
-        if fpr > fpr_target:
-            continue
-        rec = float(np.sum(flagged & fraud) / fraud_n) if fraud_n else 0.0
-        if rec >= best["recall"]:
-            best = {"fpr_target": float(fpr_target), "threshold": float(thresh), "fpr": fpr, "recall": rec}
-    return best
-
-
-def brier_and_reliability(y_true: np.ndarray, scores: np.ndarray, bins: int = 10) -> dict[str, Any]:
-    if y_true.size == 0:
-        return {"brier": None, "bins": []}
-    brier = float(brier_score_loss(y_true, np.clip(scores, 0.0, 1.0)))
-    edges = np.linspace(0.0, 1.0, bins + 1)
-    rows = []
-    for i in range(bins):
-        mask = (scores >= edges[i]) & (scores < edges[i + 1] if i < bins - 1 else scores <= edges[i + 1])
-        if not np.any(mask):
-            continue
-        rows.append(
-            {
-                "bin_left": float(edges[i]),
-                "bin_right": float(edges[i + 1]),
-                "mean_predicted": float(np.mean(scores[mask])),
-                "mean_actual": float(np.mean(y_true[mask])),
-                "n": int(np.sum(mask)),
-            }
-        )
-    return {"brier": brier, "bins": rows}
-
-
-def _pack_clf_metrics(y_true: np.ndarray, scores: np.ndarray, thresh: float) -> dict[str, float]:
-    predicted = (scores >= thresh).astype(np.int32)
-    return {
-        "threshold": float(thresh),
-        "precision": float(precision_score(y_true, predicted, zero_division=0)),
-        "recall": float(recall_score(y_true, predicted, zero_division=0)),
-        "f1": float(f1_score(y_true, predicted, zero_division=0)),
-        "average_precision": float(average_precision_score(y_true, scores)) if len(np.unique(y_true)) > 1 else float("nan"),
-        "roc_auc": float(roc_auc_score(y_true, scores)) if len(np.unique(y_true)) > 1 else float("nan"),
-        "brier": float(brier_score_loss(y_true, np.clip(scores, 0.0, 1.0))) if y_true.size else float("nan"),
-        "recall_at_5pct_fpr": recall_at_fpr(y_true, scores, 0.05),
-        "review": review_operating_point(y_true, scores, thresh),
-    }
+def _pack_clf_metrics(y_true: np.ndarray, scores: np.ndarray, thresh: float) -> dict[str, Any]:
+    return pack_clf_metrics(y_true, scores, thresh)
 
 
 def _smote_train(x_train: np.ndarray, y_train: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -347,15 +272,91 @@ def _smote_train(x_train: np.ndarray, y_train: np.ndarray) -> tuple[np.ndarray, 
     return sampler.fit_resample(x_train, y_train)
 
 
-def train() -> dict[str, float]:
+def paysim_csv_available() -> bool:
+    return PAYSIM_PATH.is_file()
+
+
+def _card_delta(xgb_metrics: dict[str, Any]) -> dict[str, Any]:
+    if not METRICS_PATH.is_file():
+        return {"committed_card_present": False}
+    card = json.loads(METRICS_PATH.read_text(encoding="utf-8"))
+    keys = ("roc_auc", "average_precision", "precision", "recall", "f1", "threshold")
+    deltas = {key: abs(float(xgb_metrics[key]) - float(card[key])) for key in keys if key in card}
+    return {
+        "committed_card_present": True,
+        "committed_model_version": card.get("model_version", "xgb_v3"),
+        "deltas": deltas,
+        "close_1e9": all(val <= 1e-9 for val in deltas.values()),
+        "close_1e6": all(val <= 1e-6 for val in deltas.values()),
+        "note": "18:27 artifacts did not store row IDs; this is metric-level closeness only",
+    }
+
+
+def _write_eval_repro(
+    *,
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    experiments: dict[str, Any],
+    user_experiments: dict[str, Any] | None,
+    user_frames: dict[str, pd.DataFrame] | None,
+    hour: dict[str, Any],
+    manifest: dict[str, Any],
+    rule_test: np.ndarray,
+    lr_test: np.ndarray,
+) -> None:
+    EVAL_REPRO_DIR.mkdir(parents=True, exist_ok=True)
+    from ml.xgb_experiments import write_experiment_report
+
+    write_experiment_report(experiments, EVAL_REPRO_DIR / "candidates.json")
+    frames = {"train": train_df, "val": val_df, "test": test_df}
+    arrays = experiments.get("_arrays") or {}
+    if arrays:
+        write_prediction_table(EVAL_REPRO_DIR / "predictions.csv", prediction_table(frames, arrays))
+    write_prediction_table(
+        EVAL_REPRO_DIR / "baselines_test.csv",
+        prediction_table(
+            {"test": test_df},
+            {
+                "rules": {"test": rule_test},
+                "logreg": {"test": lr_test},
+                "constant_fraud": {"test": np.ones(len(test_df), dtype=np.float64)},
+            },
+        ),
+    )
+    feature_export_table(frames, list(LIVE_FEATURE_NAMES)).to_csv(
+        EVAL_REPRO_DIR / "feature_rows.csv.gz", index=False, compression="gzip"
+    )
+    if user_experiments is not None and user_frames is not None:
+        write_experiment_report(user_experiments, EVAL_REPRO_DIR / "user_disjoint_candidates.json")
+        u_arrays = user_experiments.get("_arrays") or {}
+        if u_arrays:
+            u_split = {"train": user_frames["user_train"], "val": user_frames["user_val"], "test": user_frames["user_test"]}
+            write_prediction_table(
+                EVAL_REPRO_DIR / "predictions_user_disjoint.csv",
+                prediction_table(u_split, u_arrays),
+            )
+    (EVAL_REPRO_DIR / "hour_of_day.json").write_text(json.dumps(hour, indent=2, default=str), encoding="utf-8")
+    (EVAL_REPRO_DIR / "split_manifest.json").write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
+
+
+def train(*, promote: bool | None = None) -> dict[str, Any]:
+    if not paysim_csv_available():
+        raise FileNotFoundError(
+            f"PaySim CSV not found at {PAYSIM_PATH}. "
+            "Comparisons were not executed. Live xgb_v3 was not overwritten."
+        )
     paysim, _upi = build_feature_frames()
+    paysim = attach_eval_ids(paysim)
     # UPI statement file has no fraud labels — keep it out of scored evaluation.
     train_df, val_df, test_df = chronological_thirds(paysim)
+    assert_temporal_order(train_df, val_df, test_df)
     feature_cols = list(LIVE_FEATURE_NAMES)
     leaks = _leakage_correlations(train_df, feature_cols)
     hot = {name: corr for name, corr in leaks.items() if abs(corr) >= 0.9}
     if hot:
         logger.warning("high label correlation (possible leak): %s", hot)
+    dead = constant_features(train_df, feature_cols)
 
     x_train = train_df[feature_cols].to_numpy(dtype=np.float32)
     y_train = train_df["_y"].to_numpy(dtype=np.int32)
@@ -363,6 +364,7 @@ def train() -> dict[str, float]:
     y_val = val_df["_y"].to_numpy(dtype=np.int32)
     x_test = test_df[feature_cols].to_numpy(dtype=np.float32)
     y_test = test_df["_y"].to_numpy(dtype=np.int32)
+    val_n, test_n = len(y_val), len(y_test)
 
     logger.info(
         "split train=%s val=%s test=%s train_fraud=%s val_fraud=%s test_fraud=%s",
@@ -375,6 +377,8 @@ def train() -> dict[str, float]:
     )
 
     x_res, y_res = _smote_train(x_train, y_train)
+    if len(y_val) != val_n or len(y_test) != test_n:
+        raise RuntimeError("SMOTE must not change val/test row counts")
     logger.info("after SMOTE train=%s fraud=%s", len(y_res), int(y_res.sum()))
 
     model = XGBClassifier(
@@ -401,21 +405,76 @@ def train() -> dict[str, float]:
     lr_metrics = _pack_clf_metrics(y_test, lr_test, _best_threshold(y_val, _fit_logreg(x_train, y_train, x_val)))
     rule_metrics = _pack_clf_metrics(y_test, rule_test, _best_threshold(y_val, _rule_scores(val_df)))
 
+    windows = []
+    for i, window in enumerate(temporal_subwindows(test_df, 3)):
+        p = model.predict_proba(window[feature_cols].to_numpy(dtype=np.float32))[:, 1]
+        windows.append({"window": i, **split_report(f"test_w{i}", window), **_pack_clf_metrics(window["_y"].to_numpy(dtype=np.int32), p, thresh)})
+
+    from ml.xgb_experiments import run_candidates, write_experiment_report
+
+    user_eval: dict[str, Any] | None = None
+    user_experiments: dict[str, Any] | None = None
+    user_frames: dict[str, pd.DataFrame] | None = None
+    if "_user" in paysim.columns and paysim["_user"].nunique() >= 10:
+        u_train, u_val, u_test = user_disjoint_thirds(paysim, seed=RANDOM_SEED)
+        user_frames = {"user_train": u_train, "user_val": u_val, "user_test": u_test}
+        user_experiments = run_candidates(u_train, u_val, u_test)
+        user_a = user_experiments["candidates"]["A"]
+        user_b = user_experiments["candidates"]["B"]
+        user_eval = {
+            "note": "unseen originators; not a temporal test",
+            "splits": {
+                "train": split_report("user_train", u_train),
+                "val": split_report("user_val", u_val),
+                "test": split_report("user_test", u_test),
+            },
+            "threshold": user_a["threshold"],
+            "test": user_a["test"],
+            "hour_ablation": {"A": user_a["test"], "B": user_b["test"]},
+            "baselines": user_experiments.get("baselines"),
+        }
+
+    experiments = run_candidates(train_df, val_df, test_df)
+    ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+    write_experiment_report(experiments, ARTIFACT_DIR / "candidates.json")
+
     metrics = {
         "evaluation": "synthetic_paysim",
         "split": "chronological_60_20_20",
+        "splits": {
+            "train": split_report("train", train_df),
+            "val": split_report("val", val_df),
+            "test": split_report("test", test_df),
+        },
+        "sampling": {
+            "fraud_users": "all originators with isFraud=1",
+            "legit_user_cap": LEGIT_USER_CAP,
+            "legit_seq_cap": LEGIT_SEQ_CAP,
+            "note": "legit users reservoir-sampled; legit sequences truncated; fraud sequences kept in full",
+        },
+        "constant_features_train": dead,
         "precision": xgb_metrics["precision"],
         "recall": xgb_metrics["recall"],
         "f1": xgb_metrics["f1"],
         "roc_auc": xgb_metrics["roc_auc"],
         "average_precision": xgb_metrics["average_precision"],
         "threshold": xgb_metrics["threshold"],
+        "threshold_source": "validation_f1",
+        "threshold_selection": THRESHOLD_SELECTION,
         "review": xgb_metrics["review"],
-        "baselines": {"rules": rule_metrics, "logistic_regression": lr_metrics, "xgboost": xgb_metrics},
+        "test_windows": windows,
+        "user_disjoint": user_eval,
+        "baselines": {
+            "rules": rule_metrics,
+            "logistic_regression": lr_metrics,
+            "xgboost": xgb_metrics,
+            "constant_fraud": constant_fraud_metrics(y_test),
+        },
         "feature_names": list(LIVE_FEATURE_NAMES),
         "max_abs_label_corr": max((abs(v) for v in leaks.values()), default=0.0),
         "high_corr_features": hot,
         "geo_leak": False,
+        "calibrated_for_upi": False,
         "model_version": "xgb_v3",
         "geo_feature_importance_share": float(
             sum(
@@ -426,6 +485,7 @@ def train() -> dict[str, float]:
         )
         if hasattr(model, "feature_importances_")
         else None,
+        "replace_xgb_v3": False,
         "limitations": [
             "Synthetic-data evaluation (PaySim). Not a real UPI fraud holdout.",
             "No labeled historical UPI set was available; statement CSV is unlabeled and unused for metrics.",
@@ -434,23 +494,80 @@ def train() -> dict[str, float]:
             "Experimental — not a certified fraud detector.",
             "PaySim fraud is time-clustered; the newest slice can be mostly fraud, so PR/review rates are not a real UPI false-positive rate.",
             "hour_of_day is PaySim step-hour/23, not UPI circadian risk; it can dominate gain as a time-cluster proxy.",
+            "velocity_5m / velocity_1m are wall-clock windows; PaySim steps are hours, so short windows rarely contain more than one event.",
+            "Device and GPS features are missing in PaySim and are constant or uninformative in training.",
             "Not production-ready: synthetic labels, no UPI ATO labels, calibration is experimental.",
             "calibrated_for_upi is false until a labeled UPI holdout exists.",
         ],
     }
-    print(f"evaluation=synthetic_paysim split=60/20/20")
+    print("evaluation=synthetic_paysim split=60/20/20")
     print(f"xgb precision={xgb_metrics['precision']:.4f} recall={xgb_metrics['recall']:.4f} ap={xgb_metrics['average_precision']:.4f}")
     print(f"lr  precision={lr_metrics['precision']:.4f} recall={lr_metrics['recall']:.4f} ap={lr_metrics['average_precision']:.4f}")
     print(f"rules precision={rule_metrics['precision']:.4f} recall={rule_metrics['recall']:.4f} ap={rule_metrics['average_precision']:.4f}")
     print(f"review fraud_recall={xgb_metrics['review']['fraud_recall']:.4f} legit_review_rate={xgb_metrics['review']['legit_review_rate']:.4f}")
 
-    MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    joblib.dump({"model": model, "feature_names": list(LIVE_FEATURE_NAMES), "version": "xgb_v3"}, MODEL_PATH)
-    METRICS_PATH.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
-    print(f"saved model -> {MODEL_PATH}")
-    print(f"saved metrics -> {METRICS_PATH}")
+    ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+    (ARTIFACT_DIR / "temporal_metrics.json").write_text(json.dumps(metrics, indent=2, default=str), encoding="utf-8")
+    joblib.dump(
+        {"model": model, "feature_names": list(LIVE_FEATURE_NAMES), "version": "xgb_experiment", "calibrated_for_upi": False},
+        ARTIFACT_DIR / "xgboost_experiment.pkl",
+    )
+    hour = hour_of_day_analysis(
+        {"train": train_df, "val": val_df, "test": test_df},
+        epoch=PAYSIM_EPOCH,
+        windows_a=experiments["candidates"]["A"].get("test_windows"),
+        windows_b=experiments["candidates"]["B"].get("test_windows"),
+    )
+    manifest = {
+        "evaluation": "synthetic_paysim",
+        "calibrated_for_upi": False,
+        "replace_xgb_v3": False,
+        "seed": RANDOM_SEED,
+        "paysim_csv": str(PAYSIM_PATH.name),
+        "paysim_bytes": PAYSIM_PATH.stat().st_size if PAYSIM_PATH.is_file() else None,
+        "row_id": "sha256(user|timestamp_iso|seq)[:16]",
+        "user_anon": "sha256('sentinalpay|'+user)[:16]",
+        "sampling": metrics["sampling"],
+        "splits": metrics["splits"],
+        "threshold_selection": THRESHOLD_SELECTION,
+        "xgb_v3_card_match": _card_delta(xgb_metrics),
+        "prior_run_missing": [
+            "per-row labels",
+            "per-row scores",
+            "row ids",
+            "split membership file",
+        ],
+        "reconstructed_from": "PaySim CSV + seed 7102 + chronological_thirds; prior run did not persist row IDs",
+        "live_model_untouched": True,
+    }
+    _write_eval_repro(
+        train_df=train_df,
+        val_df=val_df,
+        test_df=test_df,
+        experiments=experiments,
+        user_experiments=user_experiments,
+        user_frames=user_frames,
+        hour=hour,
+        manifest=manifest,
+        rule_test=rule_test,
+        lr_test=lr_test,
+    )
+    (EVAL_REPRO_DIR / "temporal_metrics.json").write_text(json.dumps(metrics, indent=2, default=str), encoding="utf-8")
+    should_promote = os.getenv("SENTINALPAY_XGB_PROMOTE", "").strip().lower() in {"1", "true", "yes"} if promote is None else promote
+    if should_promote:
+        MODEL_DIR.mkdir(parents=True, exist_ok=True)
+        joblib.dump({"model": model, "feature_names": list(LIVE_FEATURE_NAMES), "version": "xgb_v3"}, MODEL_PATH)
+        METRICS_PATH.write_text(json.dumps(metrics, indent=2, default=str), encoding="utf-8")
+        print(f"promoted model -> {MODEL_PATH}")
+    else:
+        print(f"wrote experiment artifacts -> {ARTIFACT_DIR} (xgb_v3 not overwritten)")
+        print(f"wrote row-level eval artifacts -> {EVAL_REPRO_DIR}")
     return metrics
 
 
 if __name__ == "__main__":
-    train()
+    try:
+        train()
+    except FileNotFoundError as exc:
+        print(exc)
+        raise SystemExit(2) from exc

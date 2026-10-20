@@ -29,6 +29,8 @@ _SAVED_FEATURE_NAMES: tuple[str, ...] | None = None
 # fraud recipe, not a general UPI pattern.
 # hour_of_day is wall-clock hour/23. On PaySim, timestamp is epoch+step hours,
 # so that column tracks simulator time clusters, not UPI circadian risk.
+# velocity_5m / velocity_1m are wall-clock seconds; PaySim steps are hours, so
+# those short windows almost never contain more than the current event.
 LIVE_FEATURE_NAMES: tuple[str, ...] = FEATURE_VECTOR_NAMES + (
     "hour_of_day",
     "amount_to_median",
