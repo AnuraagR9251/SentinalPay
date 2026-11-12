@@ -81,6 +81,10 @@ class _PostgresConn:
             adapted += " ON CONFLICT (challenge_id) DO NOTHING"
         elif "INSERT INTO payment_events " in adapted and "ON CONFLICT" not in adapted:
             adapted += " ON CONFLICT (event_id) DO NOTHING"
+        elif "INSERT INTO checkout_orders " in adapted and "ON CONFLICT" not in adapted:
+            adapted += " ON CONFLICT (transaction_id) DO NOTHING"
+        elif "INSERT INTO secondary_assessments " in adapted and "ON CONFLICT" not in adapted:
+            adapted += " ON CONFLICT (transaction_id) DO NOTHING"
         elif "INSERT INTO provider_payments " in adapted and "ON CONFLICT" not in adapted:
             adapted += (
                 " ON CONFLICT (payment_id) DO UPDATE SET"
@@ -239,6 +243,17 @@ CREATE TABLE IF NOT EXISTS provider_payments (
     latest_created_at INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS checkout_orders (
+    transaction_id TEXT PRIMARY KEY,
+    order_id TEXT UNIQUE,
+    user_id TEXT NOT NULL,
+    amount_paise INTEGER NOT NULL,
+    currency TEXT NOT NULL,
+    payment_id TEXT,
+    payment_status TEXT NOT NULL DEFAULT 'none',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS challenges (
     challenge_id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -249,6 +264,23 @@ CREATE TABLE IF NOT EXISTS challenges (
     attempts INTEGER NOT NULL DEFAULT 0,
     max_attempts INTEGER NOT NULL DEFAULT 3,
     consumed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS secondary_assessments (
+    transaction_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    amount_paise INTEGER NOT NULL,
+    currency TEXT NOT NULL,
+    merchant_id TEXT NOT NULL,
+    device_id TEXT NOT NULL DEFAULT '',
+    latitude REAL,
+    longitude REAL,
+    outcome TEXT NOT NULL,
+    reasons TEXT NOT NULL,
+    primary_action TEXT NOT NULL,
+    primary_decision TEXT,
+    primary_score INTEGER,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
 );
 """
 
@@ -1218,6 +1250,225 @@ class RiskStore:
                 (payment_id,),
             ).fetchone()
         return dict(row) if row else None
+
+    def get_secondary_assessment(self, transaction_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM secondary_assessments WHERE transaction_id = ?",
+                (transaction_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        stored = dict(row)
+        raw_reasons = stored.get("reasons")
+        if isinstance(raw_reasons, str):
+            try:
+                parsed = json.loads(raw_reasons)
+            except json.JSONDecodeError:
+                parsed = ["assessment_failed"]
+            stored["reasons"] = parsed if isinstance(parsed, list) else ["assessment_failed"]
+        expires_at = str(stored.get("expires_at") or "")
+        try:
+            exp = datetime.fromisoformat(expires_at)
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            stored["expired"] = datetime.now(timezone.utc) >= exp
+        except ValueError:
+            stored["expired"] = True
+        return stored
+
+    def put_secondary_assessment(self, row: dict[str, Any]) -> dict[str, Any]:
+        """Insert once. A replay reads the original row and does not overwrite it."""
+        now = datetime.now(timezone.utc)
+        created_at = now.isoformat()
+        expires_at = (now + timedelta(seconds=int(row["ttl_s"]))).isoformat()
+        with _LOCK, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO secondary_assessments (
+                    transaction_id, user_id, amount_paise, currency, merchant_id, device_id,
+                    latitude, longitude, outcome, reasons, primary_action, primary_decision,
+                    primary_score, created_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["transaction_id"],
+                    row["user_id"],
+                    int(row["amount_paise"]),
+                    row["currency"],
+                    row["merchant_id"],
+                    row.get("device_id") or "",
+                    row.get("latitude"),
+                    row.get("longitude"),
+                    row["outcome"],
+                    json.dumps(list(row.get("reasons") or [])),
+                    row.get("primary_action") or "HOLD",
+                    row.get("primary_decision"),
+                    row.get("primary_score"),
+                    created_at,
+                    expires_at,
+                ),
+            )
+            conn.commit()
+        stored = self.get_secondary_assessment(str(row["transaction_id"]))
+        if stored is None:
+            raise StoreConflictError("secondary assessment was not stored")
+        return stored
+
+    def failed_checkout_count(self, user_id: str, *, exclude_transaction_id: str = "") -> int | None:
+        """Failed checkout rows for this user. None when that ledger has no other rows."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT transaction_id, payment_status
+                FROM checkout_orders
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            ).fetchall()
+        prior = [dict(item) for item in rows if str(dict(item).get("transaction_id") or "") != exclude_transaction_id]
+        if not prior:
+            return None
+        return sum(1 for item in prior if str(item.get("payment_status") or "") == "failed")
+
+    def review_status(self, transaction_id: str) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT status FROM review_cases WHERE transaction_id = ?",
+                (transaction_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return str(row["status"] if not isinstance(row, tuple) else row[0])
+
+    def challenge_cleared(self, transaction_id: str, user_id: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1 AS ok FROM challenges
+                WHERE transaction_id = ? AND user_id = ? AND consumed_at IS NOT NULL
+                LIMIT 1
+                """,
+                (transaction_id, user_id),
+            ).fetchone()
+        return row is not None
+
+    def begin_checkout_order(
+        self,
+        *,
+        transaction_id: str,
+        user_id: str,
+        amount_paise: int,
+        currency: str,
+    ) -> dict[str, Any]:
+        """Claim one checkout row per transaction. A second identical claim returns the existing row."""
+        now = datetime.now(timezone.utc).isoformat()
+        with _LOCK, self._connect() as conn:
+            claimed = conn.execute(
+                """
+                INSERT OR IGNORE INTO checkout_orders (
+                    transaction_id, order_id, user_id, amount_paise, currency,
+                    payment_id, payment_status, created_at, updated_at
+                ) VALUES (?, NULL, ?, ?, ?, NULL, 'none', ?, ?)
+                """,
+                (transaction_id, user_id, int(amount_paise), currency, now, now),
+            )
+            if self._pg:
+                inserted = int(getattr(claimed, "rowcount", 0) or 0)
+            else:
+                changes = conn.execute("SELECT changes() AS n").fetchone()
+                inserted = int(changes["n"] if changes is not None else 0)
+            row = conn.execute(
+                "SELECT * FROM checkout_orders WHERE transaction_id = ?",
+                (transaction_id,),
+            ).fetchone()
+            conn.commit()
+        existing = dict(row) if row else {}
+        same = (
+            existing.get("user_id") == user_id
+            and int(existing.get("amount_paise") or 0) == int(amount_paise)
+            and str(existing.get("currency") or "") == currency
+        )
+        if not same:
+            return {"conflict": True, "row": existing}
+        if not inserted and not existing.get("order_id"):
+            return {"in_progress": True, "row": existing}
+        return {"created": inserted > 0, "row": existing}
+
+    def attach_checkout_order(self, transaction_id: str, order_id: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with _LOCK, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE checkout_orders
+                SET order_id = ?, updated_at = ?
+                WHERE transaction_id = ? AND order_id IS NULL
+                """,
+                (order_id, now, transaction_id),
+            )
+            conn.commit()
+
+    def release_checkout_order(self, transaction_id: str) -> None:
+        with _LOCK, self._connect() as conn:
+            conn.execute(
+                "DELETE FROM checkout_orders WHERE transaction_id = ? AND order_id IS NULL",
+                (transaction_id,),
+            )
+            conn.commit()
+
+    def get_checkout_order(self, order_id: str) -> dict[str, Any] | None:
+        if not order_id:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM checkout_orders WHERE order_id = ?",
+                (order_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_checkout_by_transaction(self, transaction_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM checkout_orders WHERE transaction_id = ?",
+                (transaction_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def sync_checkout_payment(
+        self,
+        *,
+        order_id: str,
+        payment_id: str,
+        status: str,
+        amount: float,
+        currency: str,
+    ) -> dict[str, Any]:
+        """Move checkout payment_status forward. Captured and failed do not regress."""
+        row = self.get_checkout_order(order_id)
+        if row is None:
+            return {"applied": False, "reason": "unknown_order"}
+        paise = int(round(float(amount) * 100))
+        if paise != int(row["amount_paise"]) or str(currency or "").upper() != str(row["currency"]):
+            return {"applied": False, "reason": "mismatch", "status": row.get("payment_status")}
+        current = str(row.get("payment_status") or "none")
+        incoming = str(status or "unknown")
+        if current in {"captured", "failed"} and incoming != current:
+            return {"applied": False, "reason": "terminal", "status": current}
+        rank = {"none": 0, "created": 1, "pending": 1, "unknown": 1, "authorized": 2, "captured": 3, "failed": 3}
+        if rank.get(incoming, 0) < rank.get(current, 0):
+            return {"applied": False, "reason": "regressed", "status": current}
+        now = datetime.now(timezone.utc).isoformat()
+        with _LOCK, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE checkout_orders
+                SET payment_id = ?, payment_status = ?, updated_at = ?
+                WHERE order_id = ?
+                """,
+                (payment_id, incoming, now, order_id),
+            )
+            conn.commit()
+        return {"applied": True, "status": incoming}
 
     def pending_reviews(self) -> list[dict[str, Any]]:
         with self._connect() as conn:

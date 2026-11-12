@@ -3,6 +3,7 @@ import { X, ShieldCheck, ChevronDown, Check, ArrowRight } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { scoreApiRoot } from '../../api/session';
 import { openRazorpayCheckout, rupeesToPaise } from '../../api/razorpayCheckout';
+import { SECONDARY_COPY } from '../../api/scoreDisplay';
 import { sound } from '../../utils/audio';
 
 export const PaymentModal = () => {
@@ -15,7 +16,8 @@ export const PaymentModal = () => {
     user,
     sessionToken,
     executePayment,
-    setRiskGateModal
+    setRiskGateModal,
+    setLastScore
   } = useApp();
 
   const { isOpen, recipient, prefillAmount, prefillCategory, defaultMethod } = paymentModal;
@@ -57,104 +59,168 @@ export const PaymentModal = () => {
       return;
     }
     const num = parseFloat(payAmount);
+    const transactionId = `tx-${Date.now()}`;
     setPaymentModal((prev) => ({ ...prev, isOpen: false }));
-    await scoreAndExecutePayment({
-      recipient,
-      amount: num,
-      category,
-      method: 'Razorpay',
-      note,
-      reviewAsksOtp: true,
-      onCleared: ({ transactionId, score }) => {
-        openRazorpayAfterScore({ key, paise, num, transactionId, score });
-      }
+    setRiskGateModal({
+      isOpen: true,
+      phase: 'scanning',
+      payeeName: recipient.name,
+      amount: num
     });
+    await placeCheckout({ key, paise, num, transactionId });
   };
 
-  const openRazorpayAfterScore = async ({ key, paise, num, transactionId, score }) => {
+  const placeCheckout = async ({ key, paise, num, transactionId }) => {
+    const showGate = (phase, extra = {}) => setRiskGateModal({
+      isOpen: true,
+      phase,
+      payeeName: recipient.name,
+      amount: num,
+      ...extra
+    });
     try {
       const headers = { 'Content-Type': 'application/json' };
       if (sessionToken) headers.Authorization = `Bearer ${sessionToken}`;
+      const loc = user.location || {};
       const created = await fetch(`${scoreApiRoot().replace(/\/$/, '')}/api/create-order`, {
         method: 'POST',
         headers,
         body: JSON.stringify({
           amount: paise,
           currency: 'INR',
-          receipt: `sp${Date.now()}`.slice(0, 40),
+          transaction_id: transactionId,
+          user_id: user.upiId,
+          merchant_id: recipient.upiId || 'upi@senitenial',
+          merchant_category: category || 'p2p',
+          device_id: user.deviceId || null,
+          timestamp: new Date().toISOString(),
+          latitude: loc.lat,
+          longitude: loc.lon,
+          receipt: transactionId.slice(0, 40),
         }),
       });
       const body = await created.json().catch(() => ({}));
-      if (!created.ok) {
-        setRiskGateModal({
+      const detail = body.detail;
+      const action = detail && typeof detail === 'object' ? detail.action : null;
+      if (created.status === 403 && action === 'STEP_UP') {
+        setRiskGateModal({ isOpen: false, phase: 'idle', payeeName: '', amount: 0 });
+        setLastScore({
+          challenge_id: detail.challenge_id,
+          action: 'STEP_UP',
+          canonical_decision: detail.decision,
+          canonical_risk_score: detail.risk_score,
+          risk_tier: 'STEP_UP'
+        });
+        setUpiPinModal({
           isOpen: true,
-          phase: 'error',
-          message: body.detail || 'Could not start payment',
-          payeeName: recipient.name,
-          amount: num
+          stepUp: true,
+          review: false,
+          amount: num,
+          recipientName: recipient.name || 'Merchant',
+          purpose: 'Step-up check',
+          onComplete: () => placeCheckout({ key, paise, num, transactionId })
         });
         return;
       }
-      openRazorpayCheckout({
+      if (created.status === 403 && action === 'HOLD') {
+        const outcome = detail.secondary_outcome;
+        if (outcome === 'REJECT') {
+          showGate('block', {
+            canonicalDecision: detail.decision || 'REVIEW',
+            canonicalRiskScore: detail.risk_score,
+            riskTier: 'HOLD',
+            message: SECONDARY_COPY.REJECT
+          });
+          return;
+        }
+        showGate('hold', {
+          canonicalDecision: detail.decision || 'REVIEW',
+          canonicalRiskScore: detail.risk_score,
+          riskTier: 'HOLD',
+          message: SECONDARY_COPY.CONTINUE_HOLD
+        });
+        return;
+      }
+      if (created.status === 403) {
+        showGate('block', {
+          canonicalDecision: (detail && detail.decision) || 'BLOCK',
+          canonicalRiskScore: detail && detail.risk_score,
+          riskTier: 'BLOCK',
+          message: 'Sentinel blocked this payment. Razorpay was not opened.'
+        });
+        return;
+      }
+      if (!created.ok) {
+        const message = typeof detail === 'string' ? detail : 'Could not start payment';
+        showGate('error', { message });
+        return;
+      }
+      const startRazorpay = () => {
+        setRiskGateModal({ isOpen: false, phase: 'idle', payeeName: '', amount: 0 });
+        openRazorpayCheckout({
         key,
         order: body,
         onSuccess: async (response) => {
           const verified = await fetch(`${scoreApiRoot().replace(/\/$/, '')}/api/verify-payment`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             body: JSON.stringify({
               razorpay_order_id: response.razorpay_order_id,
               razorpay_payment_id: response.razorpay_payment_id,
               razorpay_signature: response.razorpay_signature,
+              transaction_id: transactionId,
             }),
           });
+          const verdict = await verified.json().catch(() => ({}));
           if (!verified.ok) {
-            setRiskGateModal({
-              isOpen: true,
-              phase: 'error',
-              message: 'Payment was not verified',
-              payeeName: recipient.name,
-              amount: num
+            showGate('error', { message: verdict.detail || 'Payment was not verified' });
+            return;
+          }
+          if (verdict.settled) {
+            executePayment({
+              recipient,
+              amount: num,
+              category,
+              method: 'Razorpay',
+              note: 'Sandbox ledger — not a bank settlement',
+              transactionId,
+              score: {
+                canonical_decision: body.decision,
+                canonical_risk_score: body.risk_score
+              },
+              razorpay: true
             });
             return;
           }
-          executePayment({
-            recipient,
-            amount: num,
-            category,
-            method: 'Razorpay',
-            note,
-            transactionId,
-            score,
-            razorpay: true
+          showGate(verdict.payment_status === 'failed' ? 'block' : 'error', {
+            message: verdict.payment_status === 'failed'
+              ? 'Payment failed. Sandbox balance was not changed.'
+              : 'Payment is not settled. Sandbox balance was not changed.',
+            canonicalDecision: body.decision,
+            canonicalRiskScore: body.risk_score
           });
         },
-        onDismiss: () => setRiskGateModal({
-          isOpen: true,
-          phase: 'error',
-          message: 'Payment cancelled',
-          payeeName: recipient.name,
-          amount: num
-        }),
-        onFailed: (message) => setRiskGateModal({
-          isOpen: true,
-          phase: 'block',
-          canonicalDecision: score?.canonical_decision || 'BLOCK',
-          canonicalRiskScore: score?.canonical_risk_score,
-          riskTier: score?.risk_tier,
-          message: message || 'Payment failed',
-          payeeName: recipient.name,
-          amount: num
+        onDismiss: () => showGate('error', { message: 'Payment cancelled. Sandbox balance was not changed.' }),
+        onFailed: (message) => showGate('block', {
+          message: message || 'Payment failed. Sandbox balance was not changed.',
+          canonicalDecision: body.decision,
+          canonicalRiskScore: body.risk_score
         }),
       });
+      };
+      if (body.secondary_outcome === 'APPROVE') {
+        showGate('cleared', {
+          canonicalDecision: body.decision,
+          canonicalRiskScore: body.risk_score,
+          riskTier: 'HOLD',
+          message: SECONDARY_COPY.APPROVE,
+          onContinue: startRazorpay
+        });
+        return;
+      }
+      startRazorpay();
     } catch (err) {
-      setRiskGateModal({
-        isOpen: true,
-        phase: 'error',
-        message: err && err.message ? err.message : 'Could not start payment',
-        payeeName: recipient.name,
-        amount: num
-      });
+      showGate('error', { message: err && err.message ? err.message : 'Could not start payment' });
     }
   };
 

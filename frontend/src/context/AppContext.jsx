@@ -14,7 +14,7 @@ import {
   DEMO_PROFILES
 } from '../data/mockData';
 import { loginViaGraphql, scoreViaGraphql, verifyPinViaGraphql } from '../api/graphql';
-import { paymentGate } from '../api/scoreDisplay';
+import { SECONDARY_COPY, paymentGate } from '../api/scoreDisplay';
 import { applyClientLogout, demoResetImpliesSuccess, logoutViaRest } from '../api/session';
 import { runLabScenario as executeLabScenario } from '../lab/runScenario';
 
@@ -262,7 +262,7 @@ export const AppProvider = ({ children }) => {
       amount: numAmount,
       category: category || "Payment",
       timestamp: "Just now",
-      status: decision === 'REVIEW' ? 'Review' : razorpay ? 'Successful' : 'Sandbox',
+      status: razorpay ? 'Successful' : decision === 'REVIEW' ? 'Review' : 'Sandbox',
       method: method || "SBI •••• 4821",
       utr,
       note: note || "Sandbox ledger only — not a bank settlement",
@@ -320,7 +320,7 @@ export const AppProvider = ({ children }) => {
     });
   };
 
-  const scoreAndExecutePayment = async ({ recipient, amount, category, method, note, onCleared, reviewAsksOtp = false }) => {
+  const scoreAndExecutePayment = async ({ recipient, amount, category, method, note, onCleared }) => {
     const numAmount = parseFloat(amount);
     if (isNaN(numAmount) || numAmount <= 0) return;
 
@@ -357,7 +357,7 @@ export const AppProvider = ({ children }) => {
       );
       console.log('[SentinalPay /graphql score]', data);
       setLastScore(data);
-      const gate = paymentGate(data, reviewAsksOtp);
+      const gate = paymentGate(data);
       const settle = () => {
         setRiskGateModal({
           isOpen: false,
@@ -386,10 +386,10 @@ export const AppProvider = ({ children }) => {
         setUpiPinModal({
           isOpen: true,
           stepUp: true,
-          review: data.canonical_decision === 'REVIEW' || data.risk_tier === 'HOLD',
+          review: false,
           amount: numAmount,
           recipientName: recipient.name || recipient.billerName || 'Merchant',
-          purpose: 'Payment under review',
+          purpose: 'Step-up check',
           onComplete: settle
         });
         return;
@@ -403,7 +403,8 @@ export const AppProvider = ({ children }) => {
           canonicalRiskScore: data.canonical_risk_score,
           pXgb: data.P_xgb,
           mlCalibrated: data.ml_calibrated_for_upi,
-          canonicalDecision: data.canonical_decision
+          canonicalDecision: data.canonical_decision,
+          message: SECONDARY_COPY.CONTINUE_HOLD
         }));
         return;
       }
@@ -652,6 +653,7 @@ export const AppProvider = ({ children }) => {
         sessionToken,
         authError,
         lastScore,
+        setLastScore,
         lastLab,
         requireLogin,
         switchDemoUser,

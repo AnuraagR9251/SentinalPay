@@ -43,7 +43,7 @@ export const PaymentSuccessModal = () => {
           </p>
           {transaction.decision && (
             <p className={`text-xs font-semibold mt-1 ${transaction.decision === 'REVIEW' ? 'text-amber-300' : 'text-emerald-300'}`}>
-              {transaction.decision === 'REVIEW' ? 'Under review' : transaction.decision}
+              {transaction.decision === 'REVIEW' && !transaction.razorpay ? 'Under review' : transaction.decision}
               {transaction.riskScore != null ? ` · score ${transaction.riskScore}/100` : ''}
             </p>
           )}

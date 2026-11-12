@@ -1,11 +1,11 @@
 import React from 'react';
-import { ShieldAlert, ShieldX, LoaderCircle, Clock3 } from 'lucide-react';
-import { formatDecisionLine } from '../../api/scoreDisplay';
+import { ShieldAlert, ShieldCheck, ShieldX, LoaderCircle, Clock3 } from 'lucide-react';
+import { SECONDARY_COPY, formatDecisionLine } from '../../api/scoreDisplay';
 import { useApp } from '../../context/AppContext';
 
 export const RiskGateModal = () => {
   const { riskGateModal, setRiskGateModal, user } = useApp();
-  const { isOpen, phase, riskTier, payeeName, amount, canonicalDecision, message, pXgb, canonicalRiskScore, mlCalibrated } = riskGateModal;
+  const { isOpen, phase, riskTier, payeeName, amount, canonicalDecision, message, onContinue, pXgb, canonicalRiskScore, mlCalibrated } = riskGateModal;
 
   if (!isOpen) return null;
 
@@ -47,12 +47,12 @@ export const RiskGateModal = () => {
               <Clock3 className="w-8 h-8 text-amber-300" />
             </div>
           </div>
-          <p className="text-xs uppercase tracking-wider font-bold text-amber-400">Payment under review</p>
+          <p className="text-xs uppercase tracking-wider font-bold text-amber-400">Pending security checks</p>
           <h2 className="text-2xl font-black text-white font-heading mt-1">
             {user.currency}{Number(amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
           </h2>
           <p className="text-sm text-slate-300 mt-2">
-            Held before settlement to {payeeName || 'payee'}. No money has left your account.
+            {message || SECONDARY_COPY.CONTINUE_HOLD}
           </p>
           <p className="text-[11px] text-slate-500 mt-3 font-mono">
             {formatDecisionLine({
@@ -68,6 +68,38 @@ export const RiskGateModal = () => {
             className="w-full mt-6 py-3 rounded-2xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold cursor-pointer"
           >
             OK
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (phase === 'cleared') {
+    return (
+      <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">
+        <div className="w-full max-w-sm rounded-[36px] bg-slate-900 border border-emerald-500/40 p-6 text-center shadow-2xl relative overflow-hidden">
+          <div className="absolute top-0 left-1/2 -translate-x-1/2 w-48 h-48 bg-emerald-500/15 rounded-full blur-3xl pointer-events-none" />
+          <div className="relative my-4 inline-flex items-center justify-center">
+            <div className="w-16 h-16 rounded-full bg-emerald-500/20 border-2 border-emerald-400/40 flex items-center justify-center">
+              <ShieldCheck className="w-8 h-8 text-emerald-300" />
+            </div>
+          </div>
+          <p className="text-xs uppercase tracking-wider font-bold text-emerald-400">Checks passed</p>
+          <h2 className="text-2xl font-black text-white font-heading mt-1">
+            {user.currency}{Number(amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+          </h2>
+          <p className="text-sm text-slate-300 mt-2">
+            {message || SECONDARY_COPY.APPROVE}
+          </p>
+          <button
+            onClick={() => {
+              const go = onContinue;
+              close();
+              if (go) go();
+            }}
+            className="w-full mt-6 py-3 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold cursor-pointer"
+          >
+            Continue to payment
           </button>
         </div>
       </div>

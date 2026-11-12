@@ -1,14 +1,22 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { formatDecisionLine, paymentGate } from './scoreDisplay.js';
+import { SECONDARY_COPY, formatDecisionLine, paymentGate } from './scoreDisplay.js';
 
-test('razorpay review asks for otp and a block never pays', () => {
-  assert.equal(paymentGate({ risk_tier: 'ALLOW', canonical_decision: 'ALLOW' }, true), 'pay');
-  assert.equal(paymentGate({ risk_tier: 'HOLD', canonical_decision: 'REVIEW' }, true), 'otp');
-  assert.equal(paymentGate({ risk_tier: 'HOLD', canonical_decision: 'REVIEW' }, false), 'hold');
-  assert.equal(paymentGate({ risk_tier: 'BLOCK', canonical_decision: 'BLOCK' }, true), 'block');
-  assert.equal(paymentGate({ risk_tier: 'STEP_UP', canonical_decision: 'REVIEW' }, false), 'otp');
+test('secondary outcomes use the automated messages', () => {
+  assert.equal(SECONDARY_COPY.APPROVE, 'Security checks passed. Continue to payment.');
+  assert.equal(SECONDARY_COPY.REJECT, 'Transaction rejected following automated security assessment.');
+  assert.equal(
+    SECONDARY_COPY.CONTINUE_HOLD,
+    'Transaction remains pending additional security checks. Payment has not been completed.',
+  );
+});
+
+test('hold stays held and only step-up asks for the existing challenge', () => {
+  assert.equal(paymentGate({ action: 'ALLOW', canonical_decision: 'ALLOW' }), 'pay');
+  assert.equal(paymentGate({ action: 'HOLD', risk_tier: 'HOLD', canonical_decision: 'REVIEW' }), 'hold');
+  assert.equal(paymentGate({ action: 'BLOCK', canonical_decision: 'BLOCK' }), 'block');
+  assert.equal(paymentGate({ action: 'STEP_UP', risk_tier: 'STEP_UP', canonical_decision: 'REVIEW' }), 'otp');
 });
 
 test('does not present a 0-1 display score as P_xgb', () => {

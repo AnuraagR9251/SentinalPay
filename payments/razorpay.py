@@ -243,6 +243,14 @@ class RazorpayTestAdapter:
             "created_at": created,
             "payment_id": payment_id,
         }
+        if ledger is not None and order_id and hasattr(ledger, "sync_checkout_payment"):
+            ledger.sync_checkout_payment(
+                order_id=order_id,
+                payment_id=payment_id or event_id,
+                status=status,
+                amount=amount,
+                currency=currency,
+            )
         return {
             "accepted": True,
             "duplicate": False,

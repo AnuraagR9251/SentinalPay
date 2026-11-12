@@ -1,10 +1,16 @@
-export function paymentGate(score, reviewAsksOtp = false) {
-  const tier = score && score.risk_tier;
+export const SECONDARY_COPY = {
+  APPROVE: 'Security checks passed. Continue to payment.',
+  REJECT: 'Transaction rejected following automated security assessment.',
+  CONTINUE_HOLD: 'Transaction remains pending additional security checks. Payment has not been completed.',
+};
+
+export function paymentGate(score) {
+  const action = score && (score.action || score.risk_tier);
   const decision = score && score.canonical_decision;
-  if (tier === 'BLOCK' || decision === 'BLOCK') return 'block';
-  if (tier === 'STEP_UP' || (reviewAsksOtp && (tier === 'HOLD' || decision === 'REVIEW'))) return 'otp';
-  if (tier === 'HOLD' || decision === 'REVIEW') return 'hold';
-  if (tier === 'ALLOW') return 'pay';
+  if (action === 'BLOCK' || decision === 'BLOCK') return 'block';
+  if (action === 'STEP_UP') return 'otp';
+  if (action === 'HOLD' || decision === 'REVIEW') return 'hold';
+  if (action === 'ALLOW' || decision === 'ALLOW') return 'pay';
   return 'block';
 }
 

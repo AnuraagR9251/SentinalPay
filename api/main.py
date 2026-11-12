@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import time
 from datetime import datetime
 from math import isfinite
 from typing import Any
@@ -56,6 +55,7 @@ from risk.auth import (
 )
 from risk.ml_layer import model_status
 from risk.pipeline import PipelineError, evaluate_transaction, http_status_for_pipeline_error
+from risk.secondary import resolve_hold, same_binding
 from risk.store import get_store
 
 load_dotenv()
@@ -630,6 +630,16 @@ def razorpay_order(payload: RazorpayOrderRequest, request: Request) -> dict[str,
 class CheckoutOrderRequest(BaseModel):
     amount: int = Field(..., gt=0)
     currency: str = "INR"
+    transaction_id: str = ""
+    user_id: str = ""
+    merchant_id: str | None = None
+    payee_vpa: str | None = None
+    merchant_category: str | None = None
+    purpose: str | None = None
+    device_id: str | None = None
+    timestamp: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
     receipt: str | None = None
 
     @field_validator("currency")
@@ -640,19 +650,19 @@ class CheckoutOrderRequest(BaseModel):
             raise ValueError("unsupported currency")
         return currency
 
-    @field_validator("receipt")
+    @field_validator("receipt", "transaction_id", "user_id")
     @classmethod
-    def _receipt(cls, value: str | None) -> str | None:
+    def _short(cls, value: str | None) -> str | None:
         if value is None:
             return None
-        stripped = value.strip()
-        return stripped[:40] or None
+        return value.strip()
 
 
 class VerifyPaymentRequest(BaseModel):
     razorpay_order_id: str = ""
     razorpay_payment_id: str = ""
     razorpay_signature: str = ""
+    transaction_id: str = ""
 
 
 def _raise_razorpay(exc: Exception) -> None:
@@ -666,38 +676,268 @@ def _raise_razorpay(exc: Exception) -> None:
     raise HTTPException(status_code=500, detail="razorpay request failed") from exc
 
 
-@app.post("/api/create-order")
-def create_checkout_order(payload: CheckoutOrderRequest) -> dict[str, Any]:
-    """Standard Checkout order. Amount is paise. Public: the Razorpay signature is the proof.
+def _require_checkout_auth(request: Request) -> str | None:
+    """Open sandbox can pay. Login mode and a presented session still bind the payer.
 
-    Wallet orders stay on POST /payments/razorpay/orders, which still requires a session.
+    Risk policy stays on the server either way. `/payments/razorpay/orders` keeps require_order_auth.
+    """
+    if os.getenv("SENTINALPAY_API_KEY", "").strip():
+        authenticate_request(request)
+    if require_login():
+        return require_session(request)
+    token = bearer_token(request)
+    if not token:
+        return None
+    user_id = get_store().session_user(token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="invalid session")
+    return user_id
+
+
+def _checkout_allowed(store: Any, result: dict[str, Any], user_id: str) -> bool:
+    """ALLOW, or a consumed STEP_UP challenge. HOLD is resolved separately. BLOCK never pays."""
+    action = str(result.get("action") or "HOLD")
+    transaction_id = str(result.get("transaction_id") or "")
+    if action == "ALLOW":
+        return True
+    if action == "STEP_UP":
+        return store.challenge_cleared(transaction_id, user_id)
+    return False
+
+
+def _checkout_fields(payload: CheckoutOrderRequest, user_id: str, merchant: str) -> dict[str, Any]:
+    return {
+        "transaction_id": payload.transaction_id or "",
+        "user_id": user_id,
+        "amount_paise": payload.amount,
+        "currency": payload.currency,
+        "merchant_id": merchant,
+        "device_id": payload.device_id or "",
+        "latitude": payload.latitude,
+        "longitude": payload.longitude,
+        "timestamp": payload.timestamp,
+    }
+
+
+def _public_secondary(resolved: dict[str, Any]) -> str:
+    """Expired approval does not stay payable and does not become a new approval."""
+    outcome = str(resolved.get("outcome") or "CONTINUE_HOLD")
+    if outcome not in {"APPROVE", "REJECT", "CONTINUE_HOLD"}:
+        return "CONTINUE_HOLD"
+    if resolved.get("expired") and outcome == "APPROVE":
+        return "CONTINUE_HOLD"
+    return outcome
+
+
+def _deny_hold(result: dict[str, Any], resolved: dict[str, Any], transaction_id: str) -> None:
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "action": "HOLD",
+            "decision": result.get("decision"),
+            "risk_score": result.get("risk_score"),
+            "transaction_id": transaction_id,
+            "secondary_outcome": _public_secondary(resolved),
+        },
+    )
+
+
+def _checkout_body(
+    row: dict[str, Any],
+    result: dict[str, Any] | None = None,
+    secondary_outcome: str | None = None,
+) -> dict[str, Any]:
+    scored = result or {}
+    status = str(row.get("payment_status") or "none")
+    body = {
+        "order_id": row.get("order_id"),
+        "amount": int(row["amount_paise"]),
+        "currency": row["currency"],
+        "transaction_id": row["transaction_id"],
+        "action": scored.get("action"),
+        "decision": scored.get("decision"),
+        "risk_score": scored.get("risk_score"),
+        "payment_status": status,
+        "settled": status == "captured",
+    }
+    if secondary_outcome:
+        body["secondary_outcome"] = secondary_outcome
+    return body
+
+
+def _replay_checkout(store: Any, row: dict[str, Any], fields: dict[str, Any]) -> dict[str, Any]:
+    """Same transaction returns its order only when the bound details still match."""
+    transaction_id = str(row["transaction_id"])
+    secondary = store.get_secondary_assessment(transaction_id)
+    result = store.get_result(transaction_id) or {}
+    if secondary is None:
+        return _checkout_body(row, result)
+    if not same_binding(secondary, fields):
+        raise HTTPException(status_code=409, detail="transaction details changed")
+    if _public_secondary(secondary) != "APPROVE":
+        if not result:
+            result = {
+                "decision": secondary.get("primary_decision"),
+                "risk_score": secondary.get("primary_score"),
+            }
+        _deny_hold(result, secondary, transaction_id)
+    if not result.get("action"):
+        result = {
+            **result,
+            "action": secondary.get("primary_action"),
+            "decision": secondary.get("primary_decision"),
+            "risk_score": secondary.get("primary_score"),
+        }
+    return _checkout_body(row, result, "APPROVE")
+
+
+@app.post("/api/create-order")
+def create_checkout_order(payload: CheckoutOrderRequest, request: Request) -> dict[str, Any]:
+    """Score, then create one Razorpay order only when policy allows it.
+
+    Amount is paise. The browser does not decide ALLOW, HOLD, STEP_UP, or BLOCK.
     """
     if payload.amount < 100:
         raise HTTPException(status_code=400, detail="minimum amount is 100 paise")
-    adapter = get_razorpay_adapter()
-    receipt = payload.receipt or f"sp{int(time.time())}"
+    session_user = _require_checkout_auth(request)
+    transaction_id = payload.transaction_id or ""
+    user_id = payload.user_id or ""
+    merchant = (payload.merchant_id or payload.payee_vpa or "").strip()
+    if not transaction_id or not user_id or not merchant:
+        raise HTTPException(status_code=400, detail="missing fields")
+    if session_user and session_user != user_id:
+        raise HTTPException(status_code=403, detail="user mismatch")
+    store = get_store()
+    claim = store.begin_checkout_order(
+        transaction_id=transaction_id,
+        user_id=user_id,
+        amount_paise=payload.amount,
+        currency=payload.currency,
+    )
+    if claim.get("conflict"):
+        raise HTTPException(status_code=409, detail="transaction already used")
+    if claim.get("in_progress"):
+        raise HTTPException(status_code=409, detail="order in progress")
+    row = claim["row"]
+    fields = _checkout_fields(payload, user_id, merchant)
+    if row.get("order_id"):
+        return _replay_checkout(store, row, fields)
+    rupees = round(payload.amount / 100, 2)
+    raw: dict[str, Any] = {
+        "transaction_id": transaction_id,
+        "user_id": user_id,
+        "amount": rupees,
+        "currency": payload.currency,
+        "merchant_id": merchant,
+        "merchant_category": payload.merchant_category or payload.purpose,
+        "device_id": payload.device_id,
+        "timestamp": payload.timestamp,
+    }
+    if payload.latitude is not None and payload.longitude is not None:
+        raw["latitude"] = payload.latitude
+        raw["longitude"] = payload.longitude
     try:
-        return adapter.create_order_paise(
+        result = evaluate_transaction(raw, session_token=bearer_token(request))
+    except PipelineError as exc:
+        store.release_checkout_order(transaction_id)
+        raise HTTPException(status_code=http_status_for_pipeline_error(exc), detail=str(exc)) from exc
+    secondary_outcome = None
+    if str(result.get("action") or "") == "HOLD":
+        resolved = resolve_hold(store, result, fields)
+        if resolved.get("conflict"):
+            store.release_checkout_order(transaction_id)
+            raise HTTPException(status_code=409, detail="transaction details changed")
+        if _public_secondary(resolved) != "APPROVE":
+            store.release_checkout_order(transaction_id)
+            _deny_hold(result, resolved, transaction_id)
+        secondary_outcome = "APPROVE"
+    elif not _checkout_allowed(store, result, user_id):
+        store.release_checkout_order(transaction_id)
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "action": result.get("action"),
+                "decision": result.get("decision"),
+                "risk_score": result.get("risk_score"),
+                "challenge_id": result.get("challenge_id"),
+                "transaction_id": result.get("transaction_id") or transaction_id,
+            },
+        )
+    adapter = get_razorpay_adapter()
+    try:
+        created = adapter.create_order_paise(
             amount_paise=payload.amount,
             currency=payload.currency,
-            receipt=receipt,
+            receipt=(payload.receipt or transaction_id)[:40],
+            notes={"transaction_id": transaction_id},
         )
     except (RazorpayApiError, RazorpayConfigError) as exc:
+        store.release_checkout_order(transaction_id)
         _raise_razorpay(exc)
         raise
+    if int(created.get("amount") or 0) != payload.amount or str(created.get("currency") or "") != payload.currency:
+        store.release_checkout_order(transaction_id)
+        raise HTTPException(status_code=502, detail="provider amount mismatch")
+    store.attach_checkout_order(transaction_id, str(created["order_id"]))
+    saved = store.get_checkout_by_transaction(transaction_id) or row
+    saved["order_id"] = created["order_id"]
+    saved["amount_paise"] = payload.amount
+    return _checkout_body(saved, result, secondary_outcome)
+
+
+def _verify_body(row: dict[str, Any]) -> dict[str, Any]:
+    status = str(row.get("payment_status") or "none")
+    return {
+        "ok": status in {"authorized", "captured"},
+        "settled": status == "captured",
+        "payment_status": status,
+        "transaction_id": row.get("transaction_id"),
+        "order_id": row.get("order_id"),
+    }
 
 
 @app.post("/api/verify-payment")
-def verify_checkout_payment(payload: VerifyPaymentRequest) -> dict[str, bool]:
+def verify_checkout_payment(payload: VerifyPaymentRequest, request: Request) -> dict[str, Any]:
+    """Signature plus the provider's own status. A signature is not a capture."""
+    session_user = _require_checkout_auth(request)
     order_id = payload.razorpay_order_id.strip()
     payment_id = payload.razorpay_payment_id.strip()
     signature = payload.razorpay_signature.strip()
     if not order_id or not payment_id or not signature:
         raise HTTPException(status_code=400, detail="missing fields")
+    store = get_store()
+    row = store.get_checkout_order(order_id)
+    if row is None:
+        raise HTTPException(status_code=400, detail="order mismatch")
+    if payload.transaction_id.strip() and payload.transaction_id.strip() != row["transaction_id"]:
+        raise HTTPException(status_code=400, detail="order mismatch")
+    if session_user and session_user != row["user_id"]:
+        raise HTTPException(status_code=403, detail="user mismatch")
     adapter = get_razorpay_adapter()
     if not adapter.verify_checkout_signature(order_id, payment_id, signature):
         raise HTTPException(status_code=400, detail="signature mismatch")
-    return {"ok": True}
+    if row.get("payment_id") == payment_id and str(row.get("payment_status") or "none") not in {"none", ""}:
+        return _verify_body(row)
+    try:
+        ref = adapter.fetch_status(payment_id, ledger=store)
+    except (RazorpayApiError, RazorpayConfigError) as exc:
+        _raise_razorpay(exc)
+        raise
+    if str(ref.order_id or "") != order_id:
+        raise HTTPException(status_code=400, detail="order mismatch")
+    if int(round(float(ref.amount) * 100)) != int(row["amount_paise"]):
+        raise HTTPException(status_code=400, detail="amount mismatch")
+    if str(ref.currency or "").upper() != str(row["currency"]):
+        raise HTTPException(status_code=400, detail="currency mismatch")
+    store.sync_checkout_payment(
+        order_id=order_id,
+        payment_id=payment_id,
+        status=str(ref.status or "unknown"),
+        amount=float(ref.amount),
+        currency=str(ref.currency or row["currency"]),
+    )
+    fresh = store.get_checkout_order(order_id) or row
+    return _verify_body(fresh)
 
 
 @app.get("/transactions", response_model=TransactionFeed, response_class=PrettyJSONResponse)
