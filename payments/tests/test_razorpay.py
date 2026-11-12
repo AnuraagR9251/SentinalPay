@@ -34,6 +34,33 @@ def _payment_event(event_id: str, payment_id: str, status: str, created_at: int)
     }
 
 
+def test_checkout_signature_uses_order_and_payment() -> None:
+    adapter = RazorpayTestAdapter(key_id="rzp_test_x", key_secret="test-secret")
+    good = hmac.new(b"test-secret", b"order_1|pay_1", hashlib.sha256).hexdigest()
+    assert adapter.verify_checkout_signature("order_1", "pay_1", good) is True
+    assert adapter.verify_checkout_signature("order_1", "pay_1", "nope") is False
+    assert adapter.verify_checkout_signature("", "pay_1", good) is False
+
+
+def test_create_order_paise_maps_http_401(monkeypatch) -> None:
+    from io import BytesIO
+    from urllib.error import HTTPError
+
+    from payments.razorpay import RazorpayApiError
+
+    def _denied(*_args, **_kwargs):
+        raise HTTPError("https://api.razorpay.com/v1/orders", 401, "Unauthorized", None, BytesIO(b"{}"))
+
+    monkeypatch.setattr("payments.razorpay.urlopen", _denied)
+    adapter = RazorpayTestAdapter(key_id="rzp_test_x", key_secret="test-secret")
+    try:
+        adapter.create_order_paise(amount_paise=100, currency="INR", receipt="r1")
+    except RazorpayApiError as exc:
+        assert exc.status == 401
+        return
+    raise AssertionError("expected RazorpayApiError")
+
+
 def test_redirect_is_never_success() -> None:
     out = redirect_is_not_success({"razorpay_payment_id": "pay_x"})
     assert out["authoritative"] is False

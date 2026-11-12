@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { formatDecisionLine } from './scoreDisplay.js';
+import { formatDecisionLine, paymentGate } from './scoreDisplay.js';
+
+test('razorpay review asks for otp and a block never pays', () => {
+  assert.equal(paymentGate({ risk_tier: 'ALLOW', canonical_decision: 'ALLOW' }, true), 'pay');
+  assert.equal(paymentGate({ risk_tier: 'HOLD', canonical_decision: 'REVIEW' }, true), 'otp');
+  assert.equal(paymentGate({ risk_tier: 'HOLD', canonical_decision: 'REVIEW' }, false), 'hold');
+  assert.equal(paymentGate({ risk_tier: 'BLOCK', canonical_decision: 'BLOCK' }, true), 'block');
+  assert.equal(paymentGate({ risk_tier: 'STEP_UP', canonical_decision: 'REVIEW' }, false), 'otp');
+});
 
 test('does not present a 0-1 display score as P_xgb', () => {
   const line = formatDecisionLine({

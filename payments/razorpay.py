@@ -14,7 +14,7 @@ import os
 import threading
 import time
 from typing import Any
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from payments.protocol import PaymentRef, map_razorpay_status, redirect_is_not_success
@@ -24,6 +24,14 @@ API_ROOT = "https://api.razorpay.com/v1"
 
 class RazorpayConfigError(RuntimeError):
     pass
+
+
+class RazorpayApiError(RazorpayConfigError):
+    """Razorpay returned an HTTP error. status 401 is bad key id/secret."""
+
+    def __init__(self, status: int) -> None:
+        self.status = int(status)
+        super().__init__(f"razorpay http {status}")
 
 
 class RazorpayTestAdapter:
@@ -55,6 +63,39 @@ class RazorpayTestAdapter:
         expected = hmac.new(self.webhook_secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
         return hmac.compare_digest(expected, signature.strip())
 
+    def verify_checkout_signature(self, order_id: str, payment_id: str, signature: str | None) -> bool:
+        """HMAC-SHA256 of order_id|payment_id using the key secret. Not a webhook signature."""
+        if not self.key_secret or not signature or not order_id or not payment_id:
+            return False
+        message = f"{order_id}|{payment_id}".encode("utf-8")
+        expected = hmac.new(self.key_secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
+        return hmac.compare_digest(expected, signature.strip())
+
+    def create_order_paise(
+        self,
+        *,
+        amount_paise: int,
+        currency: str,
+        receipt: str,
+        notes: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if amount_paise < 100:
+            raise ValueError("minimum amount is 100 paise")
+        body = self._post_json(
+            "/orders",
+            {
+                "amount": int(amount_paise),
+                "currency": currency,
+                "receipt": receipt[:40],
+                "notes": notes or {},
+            },
+        )
+        return {
+            "order_id": str(body.get("id") or ""),
+            "amount": int(body.get("amount") or amount_paise),
+            "currency": str(body.get("currency") or currency),
+        }
+
     def create_or_reference(
         self,
         *,
@@ -63,28 +104,15 @@ class RazorpayTestAdapter:
         receipt: str,
         notes: dict[str, Any] | None = None,
     ) -> PaymentRef:
-        if not self.configured():
-            raise RazorpayConfigError("RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET required for live TEST calls")
-        payload = json.dumps(
+        body = self._post_json(
+            "/orders",
             {
                 "amount": int(round(amount * 100)),
                 "currency": currency,
-                "receipt": receipt,
+                "receipt": receipt[:40],
                 "notes": notes or {},
-            }
-        ).encode("utf-8")
-        req = Request(
-            f"{API_ROOT}/orders",
-            data=payload,
-            method="POST",
-            headers={"Content-Type": "application/json"},
+            },
         )
-        req.add_header("Authorization", _basic(self.key_id, self.key_secret))
-        try:
-            with urlopen(req, timeout=8) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
-        except URLError as exc:
-            raise RazorpayConfigError(f"razorpay timeout or network error: {exc}") from exc
         ref = PaymentRef(
             provider=self.provider,
             provider_payment_id=str(body.get("id") or receipt),
@@ -95,6 +123,24 @@ class RazorpayTestAdapter:
         )
         self._payments[ref.provider_payment_id] = ref
         return ref
+
+    def _post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if not self.configured():
+            raise RazorpayConfigError("RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET required for live TEST calls")
+        req = Request(
+            f"{API_ROOT}{path}",
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        req.add_header("Authorization", _basic(self.key_id, self.key_secret))
+        try:
+            with urlopen(req, timeout=8) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except HTTPError as exc:
+            raise RazorpayApiError(exc.code) from exc
+        except URLError as exc:
+            raise RazorpayConfigError(f"razorpay timeout or network error: {exc}") from exc
 
     def ingest_event(
         self,
@@ -234,6 +280,8 @@ class RazorpayTestAdapter:
         try:
             with urlopen(req, timeout=8) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
+        except HTTPError as exc:
+            raise RazorpayApiError(exc.code) from exc
         except URLError as exc:
             raise RazorpayConfigError(f"razorpay fetch failed: {exc}") from exc
         ref = PaymentRef(

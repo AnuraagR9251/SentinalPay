@@ -6,7 +6,7 @@ import { sound } from '../../utils/audio';
 
 export const UpiPinModal = () => {
   const { upiPinModal, setUpiPinModal, setRiskGateModal, user, verifyPin, lastScore } = useApp();
-  const { isOpen, amount, recipientName, onComplete, stepUp } = upiPinModal;
+  const { isOpen, amount, recipientName, onComplete, stepUp, review } = upiPinModal;
 
   const [pin, setPin] = useState('');
   const [pinError, setPinError] = useState('');
@@ -102,7 +102,7 @@ export const UpiPinModal = () => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-md animate-fade-in p-0 sm:p-4">
+    <div className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-md animate-fade-in p-0 sm:p-4">
       <div className="w-full max-w-sm bg-slate-950 border border-slate-800 rounded-t-[36px] sm:rounded-3xl p-6 shadow-2xl relative text-center">
         {/* Cancel button */}
         <button
@@ -115,14 +115,18 @@ export const UpiPinModal = () => {
         {/* Security badge & Header */}
         <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-500/10 text-blue-400 text-xs font-semibold mb-3">
           <Lock className="w-3 h-3" />
-          <span>{stepUp ? 'SANDBOX STEP-UP PIN' : 'ENTER UPI PIN'}</span>
+          <span>{review ? 'REVIEW OTP' : stepUp ? 'SANDBOX STEP-UP PIN' : 'ENTER UPI PIN'}</span>
         </div>
 
         <h3 className="text-xl font-bold text-white font-heading">
           {user.currency}{amount?.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
         </h3>
         <p className="text-xs text-slate-400 mt-0.5">
-          {stepUp ? 'Sandbox re-confirm (not bank OTP) for' : 'Sandbox PIN (not bank UPI) to'}{' '}
+          {review
+            ? 'Sandbox OTP 1234 to release this review for'
+            : stepUp
+              ? 'Sandbox re-confirm (not bank OTP) for'
+              : 'Sandbox PIN (not bank UPI) to'}{' '}
           <span className="text-white font-semibold">{recipientName}</span>
         </p>
 

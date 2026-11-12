@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { X, ShieldCheck, ChevronDown, Check, ArrowRight } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
+import { scoreApiRoot } from '../../api/session';
+import { openRazorpayCheckout, rupeesToPaise } from '../../api/razorpayCheckout';
 import { sound } from '../../utils/audio';
 
 export const PaymentModal = () => {
@@ -10,7 +12,10 @@ export const PaymentModal = () => {
     setUpiPinModal,
     scoreAndExecutePayment,
     banks,
-    user
+    user,
+    sessionToken,
+    executePayment,
+    setRiskGateModal
   } = useApp();
 
   const { isOpen, recipient, prefillAmount, prefillCategory, defaultMethod } = paymentModal;
@@ -20,12 +25,14 @@ export const PaymentModal = () => {
   const [selectedMethod, setSelectedMethod] = useState('');
   const [category, setCategory] = useState('Payment');
   const [showMethodDropdown, setShowMethodDropdown] = useState(false);
+  const [razorpayError, setRazorpayError] = useState('');
 
   useEffect(() => {
     if (isOpen) {
       setAmount(prefillAmount || '');
       setCategory(prefillCategory || 'Payment');
       setNote('');
+      setRazorpayError('');
       setSelectedMethod(defaultMethod || `${banks[0]?.bankName} (${banks[0]?.accountNumber})`);
     }
   }, [isOpen, prefillAmount, prefillCategory, defaultMethod, banks]);
@@ -36,6 +43,120 @@ export const PaymentModal = () => {
 
   const payAmount = amount !== '' ? amount : (prefillAmount || '');
   const quickAmounts = [100, 200, 500, 1000, 2000];
+
+  const payWithRazorpay = async () => {
+    setRazorpayError('');
+    const paise = rupeesToPaise(payAmount);
+    if (!paise) {
+      setRazorpayError('Minimum amount is ₹1');
+      return;
+    }
+    const key = import.meta.env.VITE_RAZORPAY_KEY_ID;
+    if (!key) {
+      setRazorpayError('Razorpay key is not configured');
+      return;
+    }
+    const num = parseFloat(payAmount);
+    setPaymentModal((prev) => ({ ...prev, isOpen: false }));
+    await scoreAndExecutePayment({
+      recipient,
+      amount: num,
+      category,
+      method: 'Razorpay',
+      note,
+      reviewAsksOtp: true,
+      onCleared: ({ transactionId, score }) => {
+        openRazorpayAfterScore({ key, paise, num, transactionId, score });
+      }
+    });
+  };
+
+  const openRazorpayAfterScore = async ({ key, paise, num, transactionId, score }) => {
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (sessionToken) headers.Authorization = `Bearer ${sessionToken}`;
+      const created = await fetch(`${scoreApiRoot().replace(/\/$/, '')}/api/create-order`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          amount: paise,
+          currency: 'INR',
+          receipt: `sp${Date.now()}`.slice(0, 40),
+        }),
+      });
+      const body = await created.json().catch(() => ({}));
+      if (!created.ok) {
+        setRiskGateModal({
+          isOpen: true,
+          phase: 'error',
+          message: body.detail || 'Could not start payment',
+          payeeName: recipient.name,
+          amount: num
+        });
+        return;
+      }
+      openRazorpayCheckout({
+        key,
+        order: body,
+        onSuccess: async (response) => {
+          const verified = await fetch(`${scoreApiRoot().replace(/\/$/, '')}/api/verify-payment`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              razorpay_order_id: response.razorpay_order_id,
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_signature: response.razorpay_signature,
+            }),
+          });
+          if (!verified.ok) {
+            setRiskGateModal({
+              isOpen: true,
+              phase: 'error',
+              message: 'Payment was not verified',
+              payeeName: recipient.name,
+              amount: num
+            });
+            return;
+          }
+          executePayment({
+            recipient,
+            amount: num,
+            category,
+            method: 'Razorpay',
+            note,
+            transactionId,
+            score,
+            razorpay: true
+          });
+        },
+        onDismiss: () => setRiskGateModal({
+          isOpen: true,
+          phase: 'error',
+          message: 'Payment cancelled',
+          payeeName: recipient.name,
+          amount: num
+        }),
+        onFailed: (message) => setRiskGateModal({
+          isOpen: true,
+          phase: 'block',
+          canonicalDecision: score?.canonical_decision || 'BLOCK',
+          canonicalRiskScore: score?.canonical_risk_score,
+          riskTier: score?.risk_tier,
+          message: message || 'Payment failed',
+          payeeName: recipient.name,
+          amount: num
+        }),
+      });
+    } catch (err) {
+      setRiskGateModal({
+        isOpen: true,
+        phase: 'error',
+        message: err && err.message ? err.message : 'Could not start payment',
+        payeeName: recipient.name,
+        amount: num
+      });
+    }
+  };
 
   const handleProceedToPin = (e) => {
     e.preventDefault();
@@ -215,6 +336,18 @@ export const PaymentModal = () => {
           </div>
 
           {/* Submit Button */}
+          <button
+            type="button"
+            disabled={!payAmount || parseFloat(payAmount) <= 0}
+            onClick={payWithRazorpay}
+            className="w-full py-3 rounded-2xl bg-slate-800 border border-slate-600 text-white font-bold text-sm cursor-pointer disabled:opacity-50"
+          >
+            Pay with Razorpay
+          </button>
+          <p className="text-[10px] text-center text-slate-500">
+            Domestic test card 4100 2800 0000 1007, any future expiry, any CVV.
+          </p>
+          {razorpayError && <p className="text-xs text-center text-rose-400">{razorpayError}</p>}
           <button
             type="submit"
             disabled={!payAmount || parseFloat(payAmount) <= 0}

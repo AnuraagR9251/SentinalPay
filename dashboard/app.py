@@ -138,6 +138,7 @@ def _rows(pairs: list[tuple[Transaction, RiskAssessment]]) -> pd.DataFrame:
                 "Payer location": _nearest_city(txn.lat, txn.lon),
                 "Payee location": _nearest_city(txn.payee_lat, txn.payee_lon),
                 "Risk score": round(assessment.score, 3),
+                "Score /100": "—" if assessment.canonical_risk_score is None else int(assessment.canonical_risk_score),
                 "Canonical": assessment.canonical_decision or "—",
                 "Action": _tier_label(assessment.tier),
                 "Risk class": _risk_label(assessment.ml_label),
@@ -352,6 +353,7 @@ def _render_desk() -> None:
         "Amount (INR)",
         "Payee",
         "Risk score",
+        "Score /100",
         "Canonical",
         "Action",
     ]
@@ -374,6 +376,7 @@ def _render_desk() -> None:
                 "Amount (INR)": st.column_config.NumberColumn("Amount", format="₹%.2f", width="small"),
                 "Payee": st.column_config.TextColumn("Payee", width="medium"),
                 "Risk score": st.column_config.NumberColumn("Score", format="%.3f", width="small"),
+                "Score /100": st.column_config.NumberColumn("Score /100", width="small"),
                 "Canonical": st.column_config.TextColumn("Canonical", width="small"),
                 "Action": st.column_config.TextColumn("Action", width="small"),
             },

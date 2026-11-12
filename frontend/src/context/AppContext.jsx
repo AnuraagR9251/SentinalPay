@@ -14,6 +14,7 @@ import {
   DEMO_PROFILES
 } from '../data/mockData';
 import { loginViaGraphql, scoreViaGraphql, verifyPinViaGraphql } from '../api/graphql';
+import { paymentGate } from '../api/scoreDisplay';
 import { applyClientLogout, demoResetImpliesSuccess, logoutViaRest } from '../api/session';
 import { runLabScenario as executeLabScenario } from '../lab/runScenario';
 
@@ -231,7 +232,7 @@ export const AppProvider = ({ children }) => {
   };
 
   // Execute transaction after PIN approval
-  const executePayment = ({ recipient, amount, category, method, note, transactionId }) => {
+  const executePayment = ({ recipient, amount, category, method, note, transactionId, score, razorpay }) => {
     const numAmount = parseFloat(amount);
     if (isNaN(numAmount) || numAmount <= 0) return;
 
@@ -251,6 +252,7 @@ export const AppProvider = ({ children }) => {
 
     const txId = transactionId || `sandbox-${Date.now()}`;
     const utr = `DEMO-${txId}`;
+    const decision = score?.canonical_decision || null;
 
     const newTx = {
       id: txId,
@@ -260,10 +262,13 @@ export const AppProvider = ({ children }) => {
       amount: numAmount,
       category: category || "Payment",
       timestamp: "Just now",
-      status: "Sandbox",
+      status: decision === 'REVIEW' ? 'Review' : razorpay ? 'Successful' : 'Sandbox',
       method: method || "SBI •••• 4821",
       utr,
-      note: note || "Sandbox ledger only — not a bank settlement"
+      note: note || "Sandbox ledger only — not a bank settlement",
+      decision,
+      riskScore: score?.canonical_risk_score ?? null,
+      razorpay: Boolean(razorpay),
     };
 
     setTransactions(prev => [newTx, ...prev]);
@@ -315,7 +320,7 @@ export const AppProvider = ({ children }) => {
     });
   };
 
-  const scoreAndExecutePayment = async ({ recipient, amount, category, method, note }) => {
+  const scoreAndExecutePayment = async ({ recipient, amount, category, method, note, onCleared, reviewAsksOtp = false }) => {
     const numAmount = parseFloat(amount);
     if (isNaN(numAmount) || numAmount <= 0) return;
 
@@ -352,8 +357,8 @@ export const AppProvider = ({ children }) => {
       );
       console.log('[SentinalPay /graphql score]', data);
       setLastScore(data);
-      const tier = data.risk_tier;
-      if (tier === 'ALLOW') {
+      const gate = paymentGate(data, reviewAsksOtp);
+      const settle = () => {
         setRiskGateModal({
           isOpen: false,
           phase: 'idle',
@@ -362,10 +367,14 @@ export const AppProvider = ({ children }) => {
           payeeName: '',
           amount: 0
         });
-        executePayment({ recipient, amount: numAmount, category, method, note, transactionId });
+        if (onCleared) onCleared({ transactionId, score: data });
+        else executePayment({ recipient, amount: numAmount, category, method, note, transactionId, score: data });
+      };
+      if (gate === 'pay') {
+        settle();
         return;
       }
-      if (tier === 'STEP_UP') {
+      if (gate === 'otp') {
         setRiskGateModal({
           isOpen: false,
           phase: 'idle',
@@ -377,20 +386,19 @@ export const AppProvider = ({ children }) => {
         setUpiPinModal({
           isOpen: true,
           stepUp: true,
+          review: data.canonical_decision === 'REVIEW' || data.risk_tier === 'HOLD',
           amount: numAmount,
           recipientName: recipient.name || recipient.billerName || 'Merchant',
-          purpose: 'Sentinel step-up',
-          onComplete: () => {
-            executePayment({ recipient, amount: numAmount, category, method, note, transactionId });
-          }
+          purpose: 'Payment under review',
+          onComplete: settle
         });
         return;
       }
-      if (tier === 'HOLD') {
+      if (gate === 'hold') {
         setRiskGateModal((prev) => ({
           ...prev,
           phase: 'hold',
-          riskTier: tier,
+          riskTier: data.risk_tier,
           riskScore: data.canonical_risk_score,
           canonicalRiskScore: data.canonical_risk_score,
           pXgb: data.P_xgb,
@@ -402,7 +410,7 @@ export const AppProvider = ({ children }) => {
       setRiskGateModal((prev) => ({
         ...prev,
         phase: 'block',
-        riskTier: tier,
+        riskTier: data.risk_tier,
         riskScore: data.canonical_risk_score,
         canonicalRiskScore: data.canonical_risk_score,
         pXgb: data.P_xgb,

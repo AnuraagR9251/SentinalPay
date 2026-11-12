@@ -135,7 +135,7 @@ export const RiskGateModal = () => {
         <div className="w-full max-w-sm rounded-[36px] bg-slate-900 border border-slate-700 p-6 text-center shadow-2xl">
           <ShieldAlert className="w-10 h-10 text-slate-300 mx-auto mb-3" />
           <h2 className="text-lg font-bold text-white font-heading">Could not reach Sentinel</h2>
-          <p className="text-sm text-slate-400 mt-2">Payment was not sent. Start the scoring API and try again.</p>
+          <p className="text-sm text-slate-400 mt-2">{message || 'Payment was not sent. Start the scoring API and try again.'}</p>
           <button
             onClick={close}
             className="w-full mt-6 py-3 rounded-2xl bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold cursor-pointer"

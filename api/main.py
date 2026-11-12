@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from datetime import datetime
 from math import isfinite
 from typing import Any
@@ -34,7 +35,7 @@ from api.httpbody import read_body_capped, webhook_max_bytes
 from api.graphql import graphql_router
 from api.v1 import router as v1_router
 from detection.privacy import mask_identifier
-from payments.razorpay import RazorpayConfigError, get_razorpay_adapter
+from payments.razorpay import RazorpayApiError, RazorpayConfigError, get_razorpay_adapter
 from risk.auth import (
     apply_admin_cookie,
     assert_login_not_locked,
@@ -624,6 +625,79 @@ def razorpay_order(payload: RazorpayOrderRequest, request: Request) -> dict[str,
         "currency": ref.currency,
         "note": "advisory scoring only; Razorpay still authorizes. Redirect is not success.",
     }
+
+
+class CheckoutOrderRequest(BaseModel):
+    amount: int = Field(..., gt=0)
+    currency: str = "INR"
+    receipt: str | None = None
+
+    @field_validator("currency")
+    @classmethod
+    def _inr(cls, value: str) -> str:
+        currency = value.strip().upper()
+        if currency != "INR":
+            raise ValueError("unsupported currency")
+        return currency
+
+    @field_validator("receipt")
+    @classmethod
+    def _receipt(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped[:40] or None
+
+
+class VerifyPaymentRequest(BaseModel):
+    razorpay_order_id: str = ""
+    razorpay_payment_id: str = ""
+    razorpay_signature: str = ""
+
+
+def _raise_razorpay(exc: Exception) -> None:
+    if isinstance(exc, RazorpayApiError):
+        if exc.status == 401:
+            raise HTTPException(status_code=401, detail="razorpay auth failed") from exc
+        raise HTTPException(status_code=500, detail="razorpay request failed") from exc
+    text = str(exc).lower()
+    if "required" in text:
+        raise HTTPException(status_code=503, detail="razorpay not configured") from exc
+    raise HTTPException(status_code=500, detail="razorpay request failed") from exc
+
+
+@app.post("/api/create-order")
+def create_checkout_order(payload: CheckoutOrderRequest) -> dict[str, Any]:
+    """Standard Checkout order. Amount is paise. Public: the Razorpay signature is the proof.
+
+    Wallet orders stay on POST /payments/razorpay/orders, which still requires a session.
+    """
+    if payload.amount < 100:
+        raise HTTPException(status_code=400, detail="minimum amount is 100 paise")
+    adapter = get_razorpay_adapter()
+    receipt = payload.receipt or f"sp{int(time.time())}"
+    try:
+        return adapter.create_order_paise(
+            amount_paise=payload.amount,
+            currency=payload.currency,
+            receipt=receipt,
+        )
+    except (RazorpayApiError, RazorpayConfigError) as exc:
+        _raise_razorpay(exc)
+        raise
+
+
+@app.post("/api/verify-payment")
+def verify_checkout_payment(payload: VerifyPaymentRequest) -> dict[str, bool]:
+    order_id = payload.razorpay_order_id.strip()
+    payment_id = payload.razorpay_payment_id.strip()
+    signature = payload.razorpay_signature.strip()
+    if not order_id or not payment_id or not signature:
+        raise HTTPException(status_code=400, detail="missing fields")
+    adapter = get_razorpay_adapter()
+    if not adapter.verify_checkout_signature(order_id, payment_id, signature):
+        raise HTTPException(status_code=400, detail="signature mismatch")
+    return {"ok": True}
 
 
 @app.get("/transactions", response_model=TransactionFeed, response_class=PrettyJSONResponse)

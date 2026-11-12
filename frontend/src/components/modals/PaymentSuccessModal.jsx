@@ -33,14 +33,20 @@ export const PaymentSuccessModal = () => {
         {/* Success Title & Amount */}
         <div className="space-y-1 mb-6">
           <span className="text-xs uppercase tracking-wider font-bold text-emerald-400">
-            Sandbox recorded
+            {transaction.razorpay ? 'Payment successful' : 'Sandbox recorded'}
           </span>
           <h2 className="text-3xl font-black text-white font-heading">
             {user.currency}{transaction.amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
           </h2>
           <p className="text-sm text-slate-300 font-medium">
-            Simulated debit to <span className="text-white font-semibold">{transaction.title}</span>
+            {transaction.razorpay ? 'Paid' : 'Simulated debit'} to <span className="text-white font-semibold">{transaction.title}</span>
           </p>
+          {transaction.decision && (
+            <p className={`text-xs font-semibold mt-1 ${transaction.decision === 'REVIEW' ? 'text-amber-300' : 'text-emerald-300'}`}>
+              {transaction.decision === 'REVIEW' ? 'Under review' : transaction.decision}
+              {transaction.riskScore != null ? ` · score ${transaction.riskScore}/100` : ''}
+            </p>
+          )}
           <p className="text-[11px] text-amber-300/90">Not a bank settlement — local demo ledger only.</p>
           <p className="text-xs text-slate-400">{transaction.timestamp}</p>
         </div>
