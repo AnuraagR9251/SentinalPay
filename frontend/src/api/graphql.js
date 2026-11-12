@@ -119,7 +119,7 @@ export function shapeEvaluateResult(node) {
     user_id: node.userId,
     canonical_decision: node.decision,
     canonical_risk_score: node.riskScore,
-    risk_tier: node.action === 'STEP_UP' ? 'STEP_UP' : node.decision === 'BLOCK' ? 'BLOCK' : node.decision === 'ALLOW' ? 'ALLOW' : 'HOLD',
+    risk_tier: ['ALLOW', 'STEP_UP', 'HOLD', 'BLOCK'].includes(node.action) ? node.action : 'BLOCK',
     action: node.action,
     location_baseline: node.locationBaseline || payload.location_baseline || null,
     ml_available: node.modelAvailable ?? ml.available ?? null,

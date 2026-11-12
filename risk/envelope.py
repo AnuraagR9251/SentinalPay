@@ -46,6 +46,9 @@ def attach_public_envelope(result: Mapping[str, Any]) -> dict[str, Any]:
     latency = out.get("processing_ms")
     if latency is None:
         latency = out.get("processing_time_ms")
+    out["confidence_note"] = (
+        "band-distance heuristic from the canonical score; not a calibrated model confidence"
+    )
     out["model_probability"] = model_probability
     out["model_available"] = model_available
     out["triggered_signals"] = signals

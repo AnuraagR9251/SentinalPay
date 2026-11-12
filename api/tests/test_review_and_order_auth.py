@@ -3,6 +3,7 @@
 from fastapi.testclient import TestClient
 
 from api.main import app
+from api.tests.conftest import seed_allow
 from api.tests.desk_auth import CSRF, sign_in_desk
 
 
@@ -127,6 +128,7 @@ def test_orders_login_on_requires_session(monkeypatch) -> None:
         == 401
     )
     token = _login(client)
+    seed_allow("ord-login-1")
     posted = client.post(
         "/payments/razorpay/orders",
         headers={"Authorization": f"Bearer {token}"},
@@ -156,6 +158,7 @@ def test_orders_login_on_api_key_still_needs_session(monkeypatch) -> None:
     )
     assert key_only.status_code == 401
     token = _login(client)
+    seed_allow("ord-both-1")
     session_only = client.post(
         "/payments/razorpay/orders",
         headers={"Authorization": f"Bearer {token}"},
@@ -183,6 +186,7 @@ def test_orders_api_key_only_when_login_off(monkeypatch) -> None:
     client = TestClient(app)
     body = {"amount": 10, "currency": "INR", "transaction_id": "ord-s2s-1"}
     assert client.post("/payments/razorpay/orders", json=body).status_code == 401
+    seed_allow("ord-s2s-1")
     ok = client.post(
         "/payments/razorpay/orders",
         headers={"X-API-Key": "lab-secret"},

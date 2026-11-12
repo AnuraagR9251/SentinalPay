@@ -137,7 +137,6 @@ def _rows(pairs: list[tuple[Transaction, RiskAssessment]]) -> pd.DataFrame:
                 "Payee": txn.payee_vpa,
                 "Payer location": _nearest_city(txn.lat, txn.lon),
                 "Payee location": _nearest_city(txn.payee_lat, txn.payee_lon),
-                "Risk score": round(assessment.score, 3),
                 "Score /100": "—" if assessment.canonical_risk_score is None else int(assessment.canonical_risk_score),
                 "Canonical": assessment.canonical_decision or "—",
                 "Action": _tier_label(assessment.tier),
@@ -206,12 +205,15 @@ def _risk_distribution_chart(pairs: list[tuple[Transaction, RiskAssessment]]) ->
     if not pairs:
         st.info("No scores yet.")
         return
-    frame = pd.DataFrame(
-        {
-            "score": [assessment.score for _, assessment in pairs],
-            "Action": [_tier_label(assessment.tier) for _, assessment in pairs],
-        }
-    )
+    scored = [
+        (int(assessment.canonical_risk_score), _tier_label(assessment.tier))
+        for _, assessment in pairs
+        if assessment.canonical_risk_score is not None
+    ]
+    if not scored:
+        st.info("No canonical scores yet.")
+        return
+    frame = pd.DataFrame({"score": [item[0] for item in scored], "Action": [item[1] for item in scored]})
     color_map = {
         "Legit": COLOR_LEGIT,
         "Step-up": COLOR_STEP,
@@ -233,13 +235,13 @@ def _risk_distribution_chart(pairs: list[tuple[Transaction, RiskAssessment]]) ->
         plot_bgcolor="rgba(0,0,0,0)",
         font_color="#c5d0dc",
         font_family="IBM Plex Sans",
-        xaxis_title="Risk score (0–1, from API)",
+        xaxis_title="Score /100",
         yaxis_title="Count",
         bargap=0.08,
         legend_title_text="",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
         yaxis=dict(dtick=1, tick0=0, rangemode="tozero", tickformat="d"),
-        xaxis=dict(range=[0, 1], dtick=0.2, ticks="outside"),
+        xaxis=dict(range=[0, 100], dtick=20, ticks="outside"),
     )
     st.plotly_chart(hist, use_container_width=True)
 
@@ -352,7 +354,6 @@ def _render_desk() -> None:
         "Timestamp",
         "Amount (INR)",
         "Payee",
-        "Risk score",
         "Score /100",
         "Canonical",
         "Action",
@@ -375,8 +376,7 @@ def _render_desk() -> None:
                 "Timestamp": st.column_config.TextColumn("Time", width="small"),
                 "Amount (INR)": st.column_config.NumberColumn("Amount", format="₹%.2f", width="small"),
                 "Payee": st.column_config.TextColumn("Payee", width="medium"),
-                "Risk score": st.column_config.NumberColumn("Score", format="%.3f", width="small"),
-                "Score /100": st.column_config.NumberColumn("Score /100", width="small"),
+                "Score /100": st.column_config.NumberColumn("Score /100", format="%d", width="small"),
                 "Canonical": st.column_config.TextColumn("Canonical", width="small"),
                 "Action": st.column_config.TextColumn("Action", width="small"),
             },
@@ -441,7 +441,6 @@ def _render_desk() -> None:
             st.caption(
                 f"P_xgb={xgb_txt} ({xgb_label}) · "
                 f"canonical {canonical_txt} · "
-                f"legacy 0–1 display={assessment.score:.3f} · "
                 f"P_ae={_opt_prob(assessment.p_ae, assessment.ae_available)} · "
                 f"P_graph={_opt_prob(assessment.p_graph, assessment.graph_available)}"
             )

@@ -74,16 +74,17 @@ def test_block_survives_normal_signals() -> None:
     assert fused["reasons"] == ["primary_block_kept"]
 
 
-def test_secondary_graph_flag_rejects_and_ae_flag_steps_up() -> None:
+def test_secondary_graph_flag_declines_and_ae_flag_does_not() -> None:
     rejected = assess_secondary(_evidence(graph_state="strong", ae_state="normal"))
-    assert rejected["outcome"] == "REJECT"
+    assert rejected["outcome"] == "DECLINE"
     assert "graph_network" in rejected["reasons"]
     stepped = assess_secondary(_evidence(ae_state="strong", graph_state="normal"))
-    assert stepped["outcome"] == "STEP_UP"
-    assert stepped["reasons"] == ["ae_anomaly"]
+    assert stepped["outcome"] == "ALLOW"
+    assert "ae_anomaly" in stepped["reasons"]
     held = assess_secondary(_evidence(history=[], ae_state="strong", graph_state="normal"))
-    assert held["outcome"] == "CONTINUE_HOLD"
+    assert held["outcome"] == "PENDING"
     assert "ae_anomaly" in held["reasons"]
+    assert "missing_history" in held["reasons"]
 
 
 def test_pipeline_failure_and_missing_artifact_do_not_fake_a_score(tmp_path: Path, monkeypatch) -> None:

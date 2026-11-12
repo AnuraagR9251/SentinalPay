@@ -62,6 +62,8 @@ def test_pipeline_and_review(tmp_path: Path) -> None:
         config=RiskConfig(),
     )
     assert first["transaction_id"] == "TXN_10001"
+    assert first["recent_failures"] == 0
+    assert "not a calibrated model confidence" in first["confidence_note"]
     assert first["decision"] in {"ALLOW", "REVIEW", "BLOCK"}
     assert "ml" in first and "rules" in first and "security" in first
 
@@ -103,6 +105,7 @@ def test_pipeline_and_review(tmp_path: Path) -> None:
         store=store,
         config=RiskConfig(),
     )
+    assert far["recent_failures"] == 4
     names = {item["rule"] for item in far["rules"]["triggered_rules"]}
     assert "IMPOSSIBLE_TRAVEL" in names or far["decision"] in {"REVIEW", "BLOCK"}
 

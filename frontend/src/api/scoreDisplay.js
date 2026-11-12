@@ -1,16 +1,16 @@
 export const SECONDARY_COPY = {
-  APPROVE: 'Security checks passed. Continue to payment.',
-  REJECT: 'Transaction rejected following automated security assessment.',
-  CONTINUE_HOLD: 'Transaction remains pending additional security checks. Payment has not been completed.',
+  ALLOW: 'Security checks passed. Continue to payment.',
+  DECLINE: 'Transaction declined following automated security assessment.',
+  EXPIRED: 'The security assessment expired. Payment was not completed.',
+  PENDING: 'Pending security assessment. Payment has not been completed.',
 };
 
 export function paymentGate(score) {
-  const action = score && (score.action || score.risk_tier);
-  const decision = score && score.canonical_decision;
-  if (action === 'BLOCK' || decision === 'BLOCK') return 'block';
+  const action = score && score.action;
+  if (action === 'BLOCK') return 'block';
   if (action === 'STEP_UP') return 'otp';
-  if (action === 'HOLD' || decision === 'REVIEW') return 'hold';
-  if (action === 'ALLOW' || decision === 'ALLOW') return 'pay';
+  if (action === 'HOLD') return 'hold';
+  if (action === 'ALLOW') return 'pay';
   return 'block';
 }
 

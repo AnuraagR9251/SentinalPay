@@ -43,8 +43,8 @@ def pipeline_payload_from_score(raw: Mapping[str, Any]) -> dict[str, Any]:
 def legacy_fields_from_canonical(result: Mapping[str, Any]) -> dict[str, Any]:
     decision = str(result.get("decision") or "REVIEW")
     action = str(result.get("action") or policy_action(result))
-    if action == "STEP_UP":
-        tier = "STEP_UP"
+    if action in {"ALLOW", "STEP_UP", "HOLD", "BLOCK"}:
+        tier = action
     else:
         tier = _CANONICAL_TO_LEGACY.get(decision, "HOLD")
     score_100 = int(result.get("risk_score") or 0)

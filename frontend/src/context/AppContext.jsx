@@ -14,8 +14,10 @@ import {
   DEMO_PROFILES
 } from '../data/mockData';
 import { loginViaGraphql, scoreViaGraphql, verifyPinViaGraphql } from '../api/graphql';
+import { mayMutateBalance } from '../api/holdAssessment';
+import { openRazorpayCheckout, rupeesToPaise } from '../api/razorpayCheckout';
 import { SECONDARY_COPY, paymentGate } from '../api/scoreDisplay';
-import { applyClientLogout, demoResetImpliesSuccess, logoutViaRest } from '../api/session';
+import { applyClientLogout, demoResetImpliesSuccess, logoutViaRest, scoreApiRoot } from '../api/session';
 import { runLabScenario as executeLabScenario } from '../lab/runScenario';
 
 const AppContext = createContext();
@@ -320,6 +322,106 @@ export const AppProvider = ({ children }) => {
     });
   };
 
+  const continueHeldCheckout = async ({ recipient, amount, category, note, transactionId }) => {
+    const paise = rupeesToPaise(amount);
+    const key = import.meta.env.VITE_RAZORPAY_KEY_ID;
+    if (!paise || !key) {
+      setRiskGateModal((prev) => ({
+        ...prev,
+        phase: 'error',
+        message: 'Payment was not authorized.',
+      }));
+      return;
+    }
+    try {
+      const loc = payerLocation() || {};
+      const created = await fetch(`${scoreApiRoot().replace(/\/$/, '')}/api/create-order`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({
+          amount: paise,
+          currency: 'INR',
+          transaction_id: transactionId,
+          user_id: user.upiId,
+          merchant_id: recipient.upiId || 'upi@senitenial',
+          merchant_category: category || 'p2p',
+          device_id: user.deviceId || null,
+          timestamp: new Date().toISOString(),
+          latitude: loc.lat,
+          longitude: loc.lon,
+          receipt: transactionId.slice(0, 40),
+        }),
+      });
+      const body = await created.json().catch(() => ({}));
+      if (!created.ok || !body.order_id) {
+        setRiskGateModal((prev) => ({
+          ...prev,
+          phase: 'error',
+          message: 'Payment was not authorized.',
+        }));
+        return;
+      }
+      setRiskGateModal({ isOpen: false, phase: 'idle', payeeName: '', amount: 0 });
+      openRazorpayCheckout({
+        key,
+        order: body,
+        onSuccess: async (response) => {
+          const verified = await fetch(`${scoreApiRoot().replace(/\/$/, '')}/api/verify-payment`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...authHeaders() },
+            body: JSON.stringify({
+              razorpay_order_id: response.razorpay_order_id,
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_signature: response.razorpay_signature,
+              transaction_id: transactionId,
+            }),
+          });
+          const verdict = await verified.json().catch(() => ({}));
+          if (verified.ok && mayMutateBalance(verdict.settled)) {
+            executePayment({
+              recipient,
+              amount,
+              category,
+              method: 'Razorpay',
+              note: note || 'Sandbox ledger — not a bank settlement',
+              transactionId,
+              score: { canonical_decision: body.decision, canonical_risk_score: body.risk_score },
+              razorpay: true,
+            });
+            return;
+          }
+          setRiskGateModal({
+            isOpen: true,
+            phase: 'error',
+            payeeName: recipient.name || 'payee',
+            amount,
+            message: 'Payment is not settled. Sandbox balance was not changed.',
+          });
+        },
+        onDismiss: () => setRiskGateModal({
+          isOpen: true,
+          phase: 'error',
+          payeeName: recipient.name || 'payee',
+          amount,
+          message: 'Payment cancelled. Sandbox balance was not changed.',
+        }),
+        onFailed: () => setRiskGateModal({
+          isOpen: true,
+          phase: 'block',
+          payeeName: recipient.name || 'payee',
+          amount,
+          message: 'Payment failed. Sandbox balance was not changed.',
+        }),
+      });
+    } catch {
+      setRiskGateModal((prev) => ({
+        ...prev,
+        phase: 'error',
+        message: 'Payment was not authorized.',
+      }));
+    }
+  };
+
   const scoreAndExecutePayment = async ({ recipient, amount, category, method, note, onCleared }) => {
     const numAmount = parseFloat(amount);
     if (isNaN(numAmount) || numAmount <= 0) return;
@@ -398,13 +500,15 @@ export const AppProvider = ({ children }) => {
         setRiskGateModal((prev) => ({
           ...prev,
           phase: 'hold',
-          riskTier: data.risk_tier,
+          transactionId,
+          riskTier: data.action || 'HOLD',
           riskScore: data.canonical_risk_score,
           canonicalRiskScore: data.canonical_risk_score,
           pXgb: data.P_xgb,
           mlCalibrated: data.ml_calibrated_for_upi,
           canonicalDecision: data.canonical_decision,
-          message: SECONDARY_COPY.CONTINUE_HOLD
+          message: SECONDARY_COPY.PENDING,
+          onContinue: () => continueHeldCheckout({ recipient, amount: numAmount, category, note, transactionId })
         }));
         return;
       }

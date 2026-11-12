@@ -31,6 +31,7 @@ from risk.normalize import NormalizationError, normalize_transaction
 from risk.rules import run_rules
 from risk.security import inspect_security
 from risk.policy import apply_routine_small_decision, policy_action
+from risk.secondary import resolve_hold
 from risk.store import RiskStore, StoreConflictError, get_store, payment_identity
 
 # ponytail: 50 km city-corridor heuristic. Upgrade: per-user commute ellipsoid from stored fixes.
@@ -255,6 +256,7 @@ def _result_payload(
     elapsed_ms: float,
     experimental: dict[str, Any] | None = None,
     policy_overrides: Sequence[str] | None = None,
+    recent_failures: int | None = None,
 ) -> dict[str, Any]:
     payload = {
         "transaction_id": txn_id,
@@ -268,6 +270,7 @@ def _result_payload(
         "processing_ms": round(elapsed_ms, 1),
         "processing_time_ms": round(elapsed_ms, 1),
         "location_baseline": location_baseline,
+        "recent_failures": recent_failures,
         "security": {
             "duplicate_transaction": security.duplicate_transaction,
             "replay_detected": security.replay_detected,
@@ -365,9 +368,30 @@ def evaluate_transaction(
         elapsed_ms=elapsed_ms,
         experimental=experimental,
         policy_overrides=overrides,
+        recent_failures=txn.recent_failures,
     )
     result["fusion"] = fusion
     result["action"] = policy_action(result, amount=txn.amount)
+    if result["action"] == "HOLD":
+        try:
+            resolve_hold(
+                db,
+                result,
+                {
+                    "transaction_id": txn.transaction_id,
+                    "user_id": txn.user_id,
+                    "amount_paise": int(round(float(txn.amount) * 100)),
+                    "currency": txn.currency,
+                    "merchant_id": txn.merchant_id,
+                    "device_id": txn.device_id or "",
+                    "latitude": txn.latitude,
+                    "longitude": txn.longitude,
+                    "timestamp": txn.timestamp.isoformat(),
+                },
+            )
+        except Exception:
+            # The checkout poll still fail-closes. Scoring itself stays available.
+            pass
     try:
         wrote = db.persist(txn, security, rules, behavior, ml, decision, cfg.engine_version, elapsed_ms, result=result)
     except StoreConflictError as exc:

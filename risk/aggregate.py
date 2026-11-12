@@ -95,5 +95,6 @@ def aggregate_and_decide(
             "allow_max": config.allow_max,
             "review_max": config.review_max,
             "note": "demo starting cutovers on blended risk_score; fraud_probability is separate",
+            "confidence_note": "band-distance heuristic from the canonical score; not a calibrated model confidence",
         },
     )

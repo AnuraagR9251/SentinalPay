@@ -3,6 +3,7 @@ import { X, ShieldCheck, ChevronDown, Check, ArrowRight } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { scoreApiRoot } from '../../api/session';
 import { openRazorpayCheckout, rupeesToPaise } from '../../api/razorpayCheckout';
+import { holdView, mayMutateBalance } from '../../api/holdAssessment';
 import { SECONDARY_COPY } from '../../api/scoreDisplay';
 import { sound } from '../../utils/audio';
 
@@ -123,21 +124,18 @@ export const PaymentModal = () => {
         return;
       }
       if (created.status === 403 && action === 'HOLD') {
-        const outcome = detail.secondary_outcome;
-        if (outcome === 'REJECT') {
-          showGate('block', {
-            canonicalDecision: detail.decision || 'REVIEW',
-            canonicalRiskScore: detail.risk_score,
-            riskTier: 'HOLD',
-            message: SECONDARY_COPY.REJECT
-          });
-          return;
-        }
-        showGate('hold', {
-          canonicalDecision: detail.decision || 'REVIEW',
-          canonicalRiskScore: detail.risk_score,
-          riskTier: 'HOLD',
-          message: SECONDARY_COPY.CONTINUE_HOLD
+        const view = holdView({
+          outcome: detail.secondary_outcome,
+          reasons: detail.reasons,
+          deadline: detail.deadline,
+          created_at: detail.created_at,
+          decision: detail.decision || 'REVIEW',
+          risk_score: detail.risk_score,
+        });
+        showGate(view.phase === 'hold' ? 'hold' : view.phase, {
+          ...view,
+          transactionId,
+          onContinue: () => placeCheckout({ key, paise, num, transactionId }),
         });
         return;
       }
@@ -176,7 +174,7 @@ export const PaymentModal = () => {
             showGate('error', { message: verdict.detail || 'Payment was not verified' });
             return;
           }
-          if (verdict.settled) {
+          if (mayMutateBalance(verdict.settled)) {
             executePayment({
               recipient,
               amount: num,
@@ -208,12 +206,12 @@ export const PaymentModal = () => {
         }),
       });
       };
-      if (body.secondary_outcome === 'APPROVE') {
+      if (body.secondary_outcome === 'ALLOW') {
         showGate('cleared', {
           canonicalDecision: body.decision,
           canonicalRiskScore: body.risk_score,
           riskTier: 'HOLD',
-          message: SECONDARY_COPY.APPROVE,
+          message: SECONDARY_COPY.ALLOW,
           onContinue: startRazorpay
         });
         return;

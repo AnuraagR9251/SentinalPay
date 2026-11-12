@@ -1,13 +1,51 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { ShieldAlert, ShieldCheck, ShieldX, LoaderCircle, Clock3 } from 'lucide-react';
+import { fetchHoldAssessment, holdView, remainingSeconds } from '../../api/holdAssessment';
 import { SECONDARY_COPY, formatDecisionLine } from '../../api/scoreDisplay';
 import { useApp } from '../../context/AppContext';
 
 export const RiskGateModal = () => {
-  const { riskGateModal, setRiskGateModal, user } = useApp();
-  const { isOpen, phase, riskTier, payeeName, amount, canonicalDecision, message, onContinue, pXgb, canonicalRiskScore, mlCalibrated } = riskGateModal;
+  const { riskGateModal, setRiskGateModal, user, sessionToken } = useApp();
+  const { isOpen, phase, riskTier, payeeName, amount, canonicalDecision, message, onContinue, pXgb, canonicalRiskScore, mlCalibrated, transactionId, deadline, reasons } = riskGateModal;
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!isOpen || phase !== 'hold') return undefined;
+    const clock = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(clock);
+  }, [isOpen, phase, deadline]);
+
+  useEffect(() => {
+    if (!isOpen || phase !== 'hold' || !transactionId) return undefined;
+    let cancel = false;
+    const headers = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
+    const poll = async () => {
+      try {
+        const row = await fetchHoldAssessment(transactionId, headers);
+        if (cancel) return;
+        const view = holdView(row);
+        setRiskGateModal((prev) => ({ ...prev, ...view, onContinue: prev.onContinue, transactionId }));
+      } catch {
+        if (!cancel) {
+          setRiskGateModal((prev) => ({
+            ...prev,
+            phase: 'error',
+            message: 'Security assessment could not be confirmed. Payment was not completed.',
+          }));
+        }
+      }
+    };
+    poll();
+    const timer = setInterval(poll, 1000);
+    return () => {
+      cancel = true;
+      clearInterval(timer);
+    };
+  }, [isOpen, phase, transactionId, sessionToken, setRiskGateModal]);
 
   if (!isOpen) return null;
+
+  const secondsLeft = deadline ? remainingSeconds(deadline, now) : null;
 
   const close = () => setRiskGateModal({
     isOpen: false,
@@ -47,13 +85,19 @@ export const RiskGateModal = () => {
               <Clock3 className="w-8 h-8 text-amber-300" />
             </div>
           </div>
-          <p className="text-xs uppercase tracking-wider font-bold text-amber-400">Pending security checks</p>
+          <p className="text-xs uppercase tracking-wider font-bold text-amber-400">Pending security assessment</p>
           <h2 className="text-2xl font-black text-white font-heading mt-1">
             {user.currency}{Number(amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
           </h2>
-          <p className="text-sm text-slate-300 mt-2">
-            {message || SECONDARY_COPY.CONTINUE_HOLD}
+          <p className="text-4xl font-black text-amber-200 font-heading mt-3">
+            {secondsLeft == null ? '—' : `${secondsLeft}s`}
           </p>
+          <p className="text-sm text-slate-300 mt-2">
+            {message || SECONDARY_COPY.PENDING}
+          </p>
+          {reasons && reasons.length ? (
+            <p className="text-[11px] text-slate-400 mt-2">{reasons.join(', ')}</p>
+          ) : null}
           <p className="text-[11px] text-slate-500 mt-3 font-mono">
             {formatDecisionLine({
               canonicalDecision: canonicalDecision || 'REVIEW',
@@ -89,7 +133,7 @@ export const RiskGateModal = () => {
             {user.currency}{Number(amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
           </h2>
           <p className="text-sm text-slate-300 mt-2">
-            {message || SECONDARY_COPY.APPROVE}
+            {message || SECONDARY_COPY.ALLOW}
           </p>
           <button
             onClick={() => {

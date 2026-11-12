@@ -78,12 +78,12 @@ def test_hold_then_secondary_approve_creates_an_unsettled_order(monkeypatch) -> 
     assert posted.status_code == 200
     body = posted.json()
     assert body["order_id"] == "order_1"
-    assert body["secondary_outcome"] == "APPROVE"
+    assert body["secondary_outcome"] == "ALLOW"
     assert body["settled"] is False
     assert body["action"] == "HOLD"
     assert fake.creates == 1
     stored = get_store().get_secondary_assessment("tx-approve")
-    assert stored["outcome"] == "APPROVE"
+    assert stored["outcome"] == "ALLOW"
     assert stored["primary_decision"] == "REVIEW"
 
 
@@ -93,10 +93,10 @@ def test_hold_then_secondary_reject_creates_no_order(monkeypatch) -> None:
     client = TestClient(app)
     posted = client.post("/api/create-order", json=_hold_body(transaction_id="tx-reject"))
     assert posted.status_code == 403
-    assert posted.json()["detail"]["secondary_outcome"] == "REJECT"
+    assert posted.json()["detail"]["secondary_outcome"] == "DECLINE"
     assert fake.creates == 0
     assert get_store().get_checkout_by_transaction("tx-reject") is None
-    assert get_store().get_secondary_assessment("tx-reject")["outcome"] == "REJECT"
+    assert get_store().get_secondary_assessment("tx-reject")["outcome"] == "DECLINE"
 
 
 def test_hold_without_history_continues_hold(monkeypatch) -> None:
@@ -104,7 +104,7 @@ def test_hold_without_history_continues_hold(monkeypatch) -> None:
     client = TestClient(app)
     posted = client.post("/api/create-order", json=_hold_body(transaction_id="tx-thin"))
     assert posted.status_code == 403
-    assert posted.json()["detail"]["secondary_outcome"] == "CONTINUE_HOLD"
+    assert posted.json()["detail"]["secondary_outcome"] == "PENDING"
     assert fake.creates == 0
     assert get_store().get_checkout_by_transaction("tx-thin") is None
     assert "missing_history" in get_store().get_secondary_assessment("tx-thin")["reasons"]
@@ -116,7 +116,7 @@ def test_unavailable_model_does_not_approve(monkeypatch) -> None:
     client = TestClient(app)
     posted = client.post("/api/create-order", json=_hold_body(transaction_id="tx-nomodel"))
     assert posted.status_code == 403
-    assert posted.json()["detail"]["secondary_outcome"] == "CONTINUE_HOLD"
+    assert posted.json()["detail"]["secondary_outcome"] == "PENDING"
     assert fake.creates == 0
     reasons = get_store().get_secondary_assessment("tx-nomodel")["reasons"]
     assert "model_unavailable" in reasons
@@ -134,9 +134,21 @@ def test_secondary_failure_fails_closed(monkeypatch) -> None:
     client = TestClient(app)
     posted = client.post("/api/create-order", json=_hold_body(transaction_id="tx-fail"))
     assert posted.status_code == 403
-    assert posted.json()["detail"]["secondary_outcome"] == "CONTINUE_HOLD"
+    assert posted.json()["detail"]["secondary_outcome"] == "PENDING"
     assert fake.creates == 0
     assert get_store().get_secondary_assessment("tx-fail")["reasons"] == ["assessment_failed"]
+    past = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    with get_store()._connect() as conn:
+        conn.execute(
+            "UPDATE secondary_assessments SET expires_at = ? WHERE transaction_id = ?",
+            (past, "tx-fail"),
+        )
+        conn.commit()
+    polled = client.get("/api/hold-assessment/tx-fail")
+    assert polled.status_code == 200
+    assert polled.json()["outcome"] == "DECLINE"
+    assert "deadline_expired" in polled.json()["reasons"]
+    assert fake.creates == 0
 
 
 def test_duplicate_hold_does_not_reassess_or_reorder(monkeypatch) -> None:
@@ -182,10 +194,10 @@ def test_client_cannot_submit_its_own_secondary_outcome(monkeypatch) -> None:
     client = TestClient(app)
     posted = client.post(
         "/api/create-order",
-        json=_hold_body(transaction_id="tx-bypass", secondary_outcome="APPROVE", action="ALLOW"),
+        json=_hold_body(transaction_id="tx-bypass", secondary_outcome="ALLOW", action="ALLOW"),
     )
     assert posted.status_code == 403
-    assert posted.json()["detail"]["secondary_outcome"] == "CONTINUE_HOLD"
+    assert posted.json()["detail"]["secondary_outcome"] == "PENDING"
     assert fake.creates == 0
     verify = client.post(
         "/api/verify-payment",
@@ -216,12 +228,12 @@ def test_graph_flag_on_hold_rejects_before_razorpay(monkeypatch) -> None:
     client = TestClient(app)
     posted = client.post("/api/create-order", json=_hold_body(transaction_id="tx-graph"))
     assert posted.status_code == 403
-    assert posted.json()["detail"]["secondary_outcome"] == "REJECT"
+    assert posted.json()["detail"]["secondary_outcome"] == "DECLINE"
     assert fake.creates == 0
     assert get_store().get_checkout_by_transaction("tx-graph") is None
 
 
-def test_autoencoder_flag_on_hold_requires_step_up_before_order(monkeypatch) -> None:
+def test_autoencoder_flag_on_hold_does_not_decline_a_consistent_payment(monkeypatch) -> None:
     fake = _hold_eval(
         monkeypatch,
         experimental={
@@ -235,30 +247,12 @@ def test_autoencoder_flag_on_hold_requires_step_up_before_order(monkeypatch) -> 
     )
     _seed_familiar()
     client = TestClient(app)
-    denied = client.post("/api/create-order", json=_hold_body(transaction_id="tx-ae-step"))
-    assert denied.status_code == 403
-    detail = denied.json()["detail"]
-    assert detail["action"] == "STEP_UP"
-    assert detail["secondary_outcome"] == "STEP_UP"
-    assert detail["challenge_id"]
-    assert fake.creates == 0
-    now = datetime.now(timezone.utc).isoformat()
-    store = get_store()
-    with store._connect() as conn:
-        conn.execute(
-            """
-            UPDATE challenges
-            SET consumed_at = ?
-            WHERE challenge_id = ?
-            """,
-            (now, detail["challenge_id"]),
-        )
-        conn.commit()
-    allowed = client.post("/api/create-order", json=_hold_body(transaction_id="tx-ae-step"))
+    allowed = client.post("/api/create-order", json=_hold_body(transaction_id="tx-ae-allow"))
     assert allowed.status_code == 200
-    assert allowed.json()["secondary_outcome"] == "STEP_UP"
+    assert allowed.json()["secondary_outcome"] == "ALLOW"
     assert allowed.json()["settled"] is False
     assert fake.creates == 1
+    assert "ae_anomaly" in get_store().get_secondary_assessment("tx-ae-allow")["reasons"]
 
 
 def test_client_cannot_override_fusion_with_a_body_field(monkeypatch) -> None:
@@ -276,10 +270,10 @@ def test_client_cannot_override_fusion_with_a_body_field(monkeypatch) -> None:
     client = TestClient(app)
     posted = client.post(
         "/api/create-order",
-        json=_hold_body(transaction_id="tx-fuse-bypass", decision="ALLOW", secondary_outcome="APPROVE"),
+        json=_hold_body(transaction_id="tx-fuse-bypass", decision="ALLOW", secondary_outcome="ALLOW"),
     )
     assert posted.status_code == 403
-    assert posted.json()["detail"]["secondary_outcome"] == "REJECT"
+    assert posted.json()["detail"]["secondary_outcome"] == "DECLINE"
     assert fake.creates == 0
 
 
@@ -297,7 +291,7 @@ def test_expired_approval_is_not_renewed(monkeypatch) -> None:
             "device_id": "dev-1",
             "latitude": 12.97,
             "longitude": 77.59,
-            "outcome": "APPROVE",
+            "outcome": "ALLOW",
             "reasons": ["history_consistent"],
             "primary_action": "HOLD",
             "primary_decision": "REVIEW",
@@ -323,7 +317,7 @@ def test_expired_approval_is_not_renewed(monkeypatch) -> None:
     client = TestClient(app)
     posted = client.post("/api/create-order", headers=_login(client), json=_hold_body(transaction_id="tx-expired"))
     assert posted.status_code == 403
-    assert posted.json()["detail"]["secondary_outcome"] == "CONTINUE_HOLD"
+    assert posted.json()["detail"]["secondary_outcome"] == "EXPIRED"
     assert fake.creates == 0
     assert calls["n"] == 0
-    assert get_store().get_secondary_assessment("tx-expired")["outcome"] == "APPROVE"
+    assert get_store().get_secondary_assessment("tx-expired")["outcome"] == "EXPIRED"

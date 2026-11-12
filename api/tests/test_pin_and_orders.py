@@ -3,6 +3,7 @@
 from fastapi.testclient import TestClient
 
 from api.main import app
+from api.tests.conftest import seed_allow
 from risk.store import get_store
 
 
@@ -155,6 +156,13 @@ def test_order_rejects_bad_input(monkeypatch) -> None:
         ).status_code
         == 422
     )
+    blocked = client.post(
+        "/payments/razorpay/orders",
+        headers=headers,
+        json={"amount": 10, "currency": "INR", "transaction_id": "ord-unscored"},
+    )
+    assert blocked.status_code == 403
+    seed_allow("ord-1")
     missing_keys = client.post(
         "/payments/razorpay/orders",
         headers=headers,

@@ -55,7 +55,7 @@ from risk.auth import (
 )
 from risk.ml_layer import model_status
 from risk.pipeline import PipelineError, evaluate_transaction, http_status_for_pipeline_error
-from risk.secondary import resolve_hold, same_binding
+from risk.secondary import advance_assessment, resolve_hold, same_binding
 from risk.store import get_store
 
 load_dotenv()
@@ -600,9 +600,43 @@ async def razorpay_webhook(request: Request) -> dict[str, Any]:
     return outcome
 
 
+def _scored_order_authorized(store: Any, payload: RazorpayOrderRequest, session_user: str | None) -> bool:
+    """Provider orders require a stored ALLOW, a cleared STEP_UP, or an unexpired HOLD ALLOW."""
+    transaction_id = payload.transaction_id or ""
+    if not transaction_id:
+        return False
+    txn = store.get_transaction(transaction_id)
+    result = store.get_result(transaction_id) or {}
+    if txn is None:
+        return False
+    try:
+        same_amount = abs(float(txn.get("amount") or 0) - float(payload.amount)) <= 0.001
+    except (TypeError, ValueError):
+        return False
+    if not same_amount or str(txn.get("currency") or "") != payload.currency:
+        return False
+    owner = str(txn.get("user_id") or "")
+    if session_user and session_user != owner:
+        return False
+    action = str(result.get("action") or "")
+    if action == "ALLOW":
+        return True
+    if action == "STEP_UP":
+        return store.challenge_cleared(transaction_id, owner)
+    if action == "HOLD":
+        row = advance_assessment(store, transaction_id)
+        return bool(row and str(row.get("outcome") or "") == "ALLOW" and not row.get("expired"))
+    return False
+
+
 @app.post("/payments/razorpay/orders")
 def razorpay_order(payload: RazorpayOrderRequest, request: Request) -> dict[str, Any]:
     require_order_auth(request)
+    store = get_store()
+    token = bearer_token(request)
+    session_user = store.session_user(token) if token else None
+    if not _scored_order_authorized(store, payload, session_user):
+        raise HTTPException(status_code=403, detail="payment not authorized")
     adapter = get_razorpay_adapter()
     receipt = payload.receipt or payload.transaction_id or "demo"
     try:
@@ -721,12 +755,27 @@ def _checkout_fields(payload: CheckoutOrderRequest, user_id: str, merchant: str)
 
 def _public_secondary(resolved: dict[str, Any]) -> str:
     """Expired approval does not stay payable and does not become a new approval."""
-    outcome = str(resolved.get("outcome") or "CONTINUE_HOLD")
-    if outcome not in {"APPROVE", "REJECT", "CONTINUE_HOLD", "STEP_UP"}:
-        return "CONTINUE_HOLD"
-    if resolved.get("expired") and outcome in {"APPROVE", "STEP_UP"}:
-        return "CONTINUE_HOLD"
+    outcome = str(resolved.get("outcome") or "")
+    if outcome not in {"PENDING", "ALLOW", "DECLINE", "EXPIRED"}:
+        return "DECLINE"
+    if resolved.get("expired") and outcome == "PENDING":
+        return "DECLINE"
+    if resolved.get("expired") and outcome == "ALLOW":
+        return "EXPIRED"
     return outcome
+
+
+def _assessment_body(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "transaction_id": row.get("transaction_id"),
+        "outcome": _public_secondary(row),
+        "reasons": list(row.get("reasons") or []),
+        "deadline": row.get("expires_at"),
+        "created_at": row.get("created_at"),
+        "risk_score": row.get("primary_score"),
+        "decision": row.get("primary_decision"),
+        "action": row.get("primary_action") or "HOLD",
+    }
 
 
 def _deny_hold(result: dict[str, Any], resolved: dict[str, Any], transaction_id: str) -> None:
@@ -738,6 +787,9 @@ def _deny_hold(result: dict[str, Any], resolved: dict[str, Any], transaction_id:
             "risk_score": result.get("risk_score"),
             "transaction_id": transaction_id,
             "secondary_outcome": _public_secondary(resolved),
+            "reasons": list(resolved.get("reasons") or []),
+            "deadline": resolved.get("expires_at"),
+            "created_at": resolved.get("created_at"),
         },
     )
 
@@ -775,7 +827,7 @@ def _replay_checkout(store: Any, row: dict[str, Any], fields: dict[str, Any]) ->
     if not same_binding(secondary, fields):
         raise HTTPException(status_code=409, detail="transaction details changed")
     public = _public_secondary(secondary)
-    if public not in {"APPROVE", "STEP_UP"}:
+    if public != "ALLOW":
         if not result:
             result = {
                 "decision": secondary.get("primary_decision"),
@@ -790,6 +842,18 @@ def _replay_checkout(store: Any, row: dict[str, Any], fields: dict[str, Any]) ->
             "risk_score": secondary.get("primary_score"),
         }
     return _checkout_body(row, result, public)
+
+
+@app.get("/api/hold-assessment/{transaction_id}")
+def hold_assessment(transaction_id: str, request: Request) -> dict[str, Any]:
+    """Poll one HOLD assessment. The deadline is the stored timestamp, not this request's sleep."""
+    session_user = _require_checkout_auth(request)
+    row = advance_assessment(get_store(), transaction_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="assessment not found")
+    if session_user and session_user != str(row.get("user_id") or ""):
+        raise HTTPException(status_code=403, detail="user mismatch")
+    return _assessment_body(row)
 
 
 @app.post("/api/create-order")
@@ -849,27 +913,11 @@ def create_checkout_order(payload: CheckoutOrderRequest, request: Request) -> di
             store.release_checkout_order(transaction_id)
             raise HTTPException(status_code=409, detail="transaction details changed")
         public = _public_secondary(resolved)
-        if public == "STEP_UP":
-            if not store.challenge_cleared(transaction_id, user_id):
-                challenge = store.create_challenge(user_id, transaction_id, bearer_token(request))
-                store.release_checkout_order(transaction_id)
-                raise HTTPException(
-                    status_code=403,
-                    detail={
-                        "action": "STEP_UP",
-                        "decision": result.get("decision"),
-                        "risk_score": result.get("risk_score"),
-                        "challenge_id": challenge.get("challenge_id"),
-                        "transaction_id": transaction_id,
-                        "secondary_outcome": "STEP_UP",
-                    },
-                )
-            secondary_outcome = "STEP_UP"
-        elif public != "APPROVE":
+        if public != "ALLOW":
             store.release_checkout_order(transaction_id)
             _deny_hold(result, resolved, transaction_id)
         else:
-            secondary_outcome = "APPROVE"
+            secondary_outcome = "ALLOW"
     elif not _checkout_allowed(store, result, user_id):
         store.release_checkout_order(transaction_id)
         raise HTTPException(

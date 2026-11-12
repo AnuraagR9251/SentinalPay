@@ -4,19 +4,18 @@ import { test } from 'node:test';
 import { SECONDARY_COPY, formatDecisionLine, paymentGate } from './scoreDisplay.js';
 
 test('secondary outcomes use the automated messages', () => {
-  assert.equal(SECONDARY_COPY.APPROVE, 'Security checks passed. Continue to payment.');
-  assert.equal(SECONDARY_COPY.REJECT, 'Transaction rejected following automated security assessment.');
-  assert.equal(
-    SECONDARY_COPY.CONTINUE_HOLD,
-    'Transaction remains pending additional security checks. Payment has not been completed.',
-  );
+  assert.equal(SECONDARY_COPY.ALLOW, 'Security checks passed. Continue to payment.');
+  assert.equal(SECONDARY_COPY.DECLINE, 'Transaction declined following automated security assessment.');
+  assert.equal(SECONDARY_COPY.EXPIRED, 'The security assessment expired. Payment was not completed.');
+  assert.equal(SECONDARY_COPY.PENDING, 'Pending security assessment. Payment has not been completed.');
 });
 
-test('hold stays held and only step-up asks for the existing challenge', () => {
+test('the backend action is the gate and a missing action does not pay', () => {
   assert.equal(paymentGate({ action: 'ALLOW', canonical_decision: 'ALLOW' }), 'pay');
-  assert.equal(paymentGate({ action: 'HOLD', risk_tier: 'HOLD', canonical_decision: 'REVIEW' }), 'hold');
+  assert.equal(paymentGate({ action: 'HOLD', risk_tier: 'ALLOW', canonical_decision: 'ALLOW' }), 'hold');
   assert.equal(paymentGate({ action: 'BLOCK', canonical_decision: 'BLOCK' }), 'block');
   assert.equal(paymentGate({ action: 'STEP_UP', risk_tier: 'STEP_UP', canonical_decision: 'REVIEW' }), 'otp');
+  assert.equal(paymentGate({ canonical_decision: 'ALLOW', risk_tier: 'ALLOW' }), 'block');
 });
 
 test('does not present a 0-1 display score as P_xgb', () => {

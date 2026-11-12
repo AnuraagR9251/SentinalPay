@@ -1,8 +1,35 @@
 """Deterministic HOLD resolution. Not a second fraud model and not an accuracy claim.
 
 Runs only after the primary policy already returned HOLD. It never rescores
-XGBoost and never changes ALLOW, STEP_UP, or BLOCK. Missing evidence stays
-missing: it cannot approve, and it is not treated as safe.
+XGBoost, never edits R, and never changes ALLOW, STEP_UP, or BLOCK.
+
+Lifecycle, enforced by stored timestamps (no sleep):
+
+    PENDING → ALLOW
+    PENDING → DECLINE
+    ALLOW → EXPIRED
+
+The row records created_at and a 15-second deadline. Sufficient evidence is
+finalized immediately. Unresolved or failed evidence stays PENDING and becomes
+DECLINE at the deadline. An ALLOW is payable only until that same deadline.
+
+ALLOW requires every one of these, and nothing else is treated as safety:
+
+- the rule list is present and contains no serious rule
+- the primary model was available
+- recent failures and the checkout-failure ledger are known and below the cut
+- at least five prior payments, with a known amount at or under that maximum
+- known velocity under the cut
+- location consistent with the recent fixes
+- a known device or a known recipient (a new payee on a known device, or a new
+  device to a known recipient, may ALLOW; both new stays PENDING)
+- graph state is not strong
+
+A strong graph flag declines the hold. That is a conservative checkout outcome
+for the heuristic, not a fraud label and not a term in R. A strong autoencoder
+score is recorded and does not decline by itself. Missing history, a missing
+model, an unread failure ledger, and an assessment exception stay PENDING until
+the deadline, then DECLINE. They are not proof of fraud and not proof of safety.
 """
 
 from __future__ import annotations
@@ -22,8 +49,10 @@ VELOCITY_REJECT_COUNT = 5
 FAILURE_REJECT_COUNT = 3
 LOCATION_APPROVE_KM = 50
 SPEED_REJECT_KMH = 800
-APPROVAL_TTL_S = 15 * 60
-OUTCOMES = ("APPROVE", "REJECT", "CONTINUE_HOLD", "STEP_UP")
+ASSESSMENT_DEADLINE_S = 15
+APPROVAL_TTL_S = ASSESSMENT_DEADLINE_S
+OUTCOMES = ("PENDING", "ALLOW", "DECLINE", "EXPIRED")
+_TERMINAL = ("ALLOW", "DECLINE", "EXPIRED")
 
 
 def _dt(value: Any) -> datetime | None:
@@ -128,18 +157,34 @@ def _location(priors: list[Mapping[str, Any]], latitude: Any, longitude: Any, ti
     return "unusual"
 
 
+def _known_count(value: Any) -> int | None:
+    """A known failure count. None means the ledger was not readable."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, Mapping) and value.get("state") in {"known", "no_history"}:
+        count = value.get("count")
+        if isinstance(count, int) and not isinstance(count, bool):
+            return count
+    return None
+
+
 def assess_secondary(evidence: Mapping[str, Any]) -> dict[str, Any]:
-    """One of APPROVE, REJECT, CONTINUE_HOLD. Does not read a model score."""
+    """ALLOW, DECLINE, or PENDING. Does not read an XGBoost score and does not sleep."""
     rejects: list[str] = []
     gaps: list[str] = []
+    notes: list[str] = []
     rules = evidence.get("triggered_rules", None)
     if isinstance(rules, list) and any(str(name) in SERIOUS_RULES for name in rules):
         rejects.append("serious_primary_rule")
     recent = evidence.get("recent_failures", None)
     failed = evidence.get("failed_payments", None)
-    if isinstance(recent, int) and not isinstance(recent, bool) and recent >= FAILURE_REJECT_COUNT:
+    recent_count = _known_count(recent)
+    failed_count = _known_count(failed)
+    if recent_count is not None and recent_count >= FAILURE_REJECT_COUNT:
         rejects.append("failed_attempts")
-    if isinstance(failed, int) and not isinstance(failed, bool) and failed >= FAILURE_REJECT_COUNT:
+    if failed_count is not None and failed_count >= FAILURE_REJECT_COUNT:
         rejects.append("failed_payments")
 
     history = evidence.get("history", None)
@@ -164,14 +209,21 @@ def assess_secondary(evidence: Mapping[str, Any]) -> dict[str, Any]:
             rejects.append("velocity")
         device_id = str(evidence.get("device_id") or "")
         known_devices = {str(row.get("device_id") or "") for row in history if row.get("device_id")}
-        if not device_id:
-            gaps.append("device_unavailable")
-        elif device_id not in known_devices:
-            gaps.append("new_device")
         merchant_id = str(evidence.get("merchant_id") or "")
         known_merchants = {str(row.get("merchant_id") or "") for row in history if row.get("merchant_id")}
-        if not merchant_id or merchant_id not in known_merchants:
-            gaps.append("new_payee")
+        new_device = bool(device_id) and device_id not in known_devices
+        new_payee = bool(merchant_id) and merchant_id not in known_merchants
+        if not device_id:
+            gaps.append("device_unavailable")
+        elif not merchant_id:
+            gaps.append("payee_unavailable")
+        elif new_device and new_payee:
+            gaps.append("unfamiliar_party")
+        else:
+            if new_device:
+                notes.append("new_device_allowed")
+            if new_payee:
+                notes.append("new_payee_allowed")
         location = _location(history, evidence.get("latitude"), evidence.get("longitude"), evidence.get("timestamp"))
         if location == "inconsistent":
             rejects.append("location_inconsistent")
@@ -184,35 +236,32 @@ def assess_secondary(evidence: Mapping[str, Any]) -> dict[str, Any]:
         gaps.append("model_unavailable")
     if not isinstance(rules, list):
         gaps.append("rules_unavailable")
-    observed_failure = False
-    if isinstance(recent, int) and not isinstance(recent, bool):
-        observed_failure = True
-        if 0 < recent < FAILURE_REJECT_COUNT:
-            gaps.append("prior_failures")
-    if isinstance(failed, int) and not isinstance(failed, bool):
-        observed_failure = True
-        if 0 < failed < FAILURE_REJECT_COUNT:
-            gaps.append("prior_failures")
-    if not observed_failure:
+    if recent_count is None or failed_count is None:
         gaps.append("failures_unavailable")
+    elif 0 < recent_count < FAILURE_REJECT_COUNT or 0 < failed_count < FAILURE_REJECT_COUNT:
+        gaps.append("prior_failures")
+    if isinstance(failed, Mapping) and failed.get("state") == "no_history":
+        notes.append("checkout_no_history")
 
     if evidence.get("graph_state") == "strong":
         rejects.append("graph_network")
     ae_strong = evidence.get("ae_state") == "strong"
     if rejects:
-        return {"outcome": "REJECT", "reasons": rejects}
+        if ae_strong:
+            rejects.append("ae_anomaly")
+        return {"outcome": "DECLINE", "reasons": rejects}
     if gaps:
         if ae_strong:
             gaps.append("ae_anomaly")
-        return {"outcome": "CONTINUE_HOLD", "reasons": gaps}
+        return {"outcome": "PENDING", "reasons": gaps}
+    reasons = ["history_consistent", *notes]
     if ae_strong:
-        return {"outcome": "STEP_UP", "reasons": ["ae_anomaly"]}
-    reasons = ["history_consistent"]
-    if evidence.get("ae_state") == "normal":
+        reasons.append("ae_anomaly")
+    elif evidence.get("ae_state") == "normal":
         reasons.append("ae_normal")
     if evidence.get("graph_state") == "normal":
         reasons.append("graph_normal")
-    return {"outcome": "APPROVE", "reasons": reasons}
+    return {"outcome": "ALLOW", "reasons": reasons}
 
 
 def _rule_names(result: Mapping[str, Any]) -> list[str] | None:
@@ -259,6 +308,12 @@ def collect_evidence(store: Any, result: Mapping[str, Any], fields: Mapping[str,
         for row in store.user_history(user_id)
         if str(row.get("transaction_id") or "") != transaction_id
     ]
+    try:
+        ledger = store.failed_checkout_count(user_id, exclude_transaction_id=transaction_id)
+    except Exception:
+        ledger = {"state": "unavailable", "count": None}
+    if not isinstance(ledger, Mapping):
+        ledger = {"state": "unavailable", "count": None}
     return {
         "amount": round(int(fields["amount_paise"]) / 100, 2),
         "history": history,
@@ -270,10 +325,37 @@ def collect_evidence(store: Any, result: Mapping[str, Any], fields: Mapping[str,
         "triggered_rules": _rule_names(result),
         "model_available": _model_available(result),
         "recent_failures": _recent_failures(result),
-        "failed_payments": store.failed_checkout_count(user_id, exclude_transaction_id=transaction_id),
+        "failed_payments": ledger,
         "ae_state": _signal_state(result.get("experimental"), "ae_state"),
         "graph_state": _signal_state(result.get("experimental"), "graph_state"),
     }
+
+
+def advance_assessment(store: Any, transaction_id: str, now: datetime | None = None) -> dict[str, Any] | None:
+    """Apply the stored deadline. Does not collect evidence again."""
+    row = store.get_secondary_assessment(transaction_id) if transaction_id else None
+    if row is None:
+        return None
+    moment = now or datetime.now(timezone.utc)
+    deadline = _dt(row.get("expires_at"))
+    outcome = str(row.get("outcome") or "")
+    reasons = list(row.get("reasons") or [])
+    due = deadline is None or moment >= deadline
+    if outcome == "PENDING" and due:
+        return store.finalize_secondary(
+            transaction_id,
+            "DECLINE",
+            [*reasons, "deadline_expired"],
+            from_outcomes=("PENDING",),
+        )
+    if outcome == "ALLOW" and due:
+        return store.finalize_secondary(
+            transaction_id,
+            "EXPIRED",
+            [*reasons, "approval_expired"],
+            from_outcomes=("ALLOW",),
+        )
+    return row
 
 
 def resolve_hold(store: Any, result: Mapping[str, Any], fields: Mapping[str, Any]) -> dict[str, Any]:
@@ -288,7 +370,7 @@ def resolve_hold(store: Any, result: Mapping[str, Any], fields: Mapping[str, Any
         "latitude": fields.get("latitude"),
         "longitude": fields.get("longitude"),
     }
-    existing = store.get_secondary_assessment(transaction_id) if transaction_id else None
+    existing = advance_assessment(store, transaction_id) if transaction_id else None
     if existing is not None:
         if not same_binding(existing, incoming):
             return {**existing, "conflict": True}
@@ -298,11 +380,11 @@ def resolve_hold(store: Any, result: Mapping[str, Any], fields: Mapping[str, Any
             raise ValueError("missing transaction")
         decision = assess_secondary(collect_evidence(store, result, fields))
         outcome = str(decision.get("outcome") or "")
-        if outcome not in OUTCOMES:
+        if outcome not in {"PENDING", "ALLOW", "DECLINE"}:
             raise ValueError("invalid secondary outcome")
         reasons = list(decision.get("reasons") or [])
     except Exception:
-        outcome = "CONTINUE_HOLD"
+        outcome = "PENDING"
         reasons = ["assessment_failed"]
     score = result.get("risk_score")
     try:

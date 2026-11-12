@@ -1315,21 +1315,58 @@ class RiskStore:
             raise StoreConflictError("secondary assessment was not stored")
         return stored
 
-    def failed_checkout_count(self, user_id: str, *, exclude_transaction_id: str = "") -> int | None:
-        """Failed checkout rows for this user. None when that ledger has no other rows."""
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT transaction_id, payment_status
-                FROM checkout_orders
-                WHERE user_id = ?
-                """,
-                (user_id,),
-            ).fetchall()
+    def failed_checkout_count(self, user_id: str, *, exclude_transaction_id: str = "") -> dict[str, Any]:
+        """Checkout failure ledger.
+
+        no_history: the ledger was readable and this user has no other checkout rows.
+        known: other rows exist; count is how many of them failed.
+        unavailable: the ledger could not be read. That is not zero and not fraud.
+        """
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT transaction_id, payment_status
+                    FROM checkout_orders
+                    WHERE user_id = ?
+                    """,
+                    (user_id,),
+                ).fetchall()
+        except Exception:
+            return {"state": "unavailable", "count": None}
         prior = [dict(item) for item in rows if str(dict(item).get("transaction_id") or "") != exclude_transaction_id]
         if not prior:
-            return None
-        return sum(1 for item in prior if str(item.get("payment_status") or "") == "failed")
+            return {"state": "no_history", "count": 0}
+        return {
+            "state": "known",
+            "count": sum(1 for item in prior if str(item.get("payment_status") or "") == "failed"),
+        }
+
+    def finalize_secondary(
+        self,
+        transaction_id: str,
+        outcome: str,
+        reasons: list[str],
+        *,
+        from_outcomes: tuple[str, ...],
+    ) -> dict[str, Any]:
+        """Move PENDING or ALLOW forward. A terminal DECLINE or EXPIRED is left as stored."""
+        marks = tuple(from_outcomes)
+        placeholders = ", ".join("?" for _ in marks)
+        with _LOCK, self._connect() as conn:
+            conn.execute(
+                f"""
+                UPDATE secondary_assessments
+                SET outcome = ?, reasons = ?
+                WHERE transaction_id = ? AND outcome IN ({placeholders})
+                """,
+                (outcome, json.dumps(list(reasons)), transaction_id, *marks),
+            )
+            conn.commit()
+        stored = self.get_secondary_assessment(transaction_id)
+        if stored is None:
+            raise StoreConflictError("secondary assessment missing")
+        return stored
 
     def review_status(self, transaction_id: str) -> str | None:
         with self._connect() as conn:

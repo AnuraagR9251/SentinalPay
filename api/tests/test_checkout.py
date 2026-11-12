@@ -160,7 +160,7 @@ def test_manual_review_does_not_bypass_hold(monkeypatch) -> None:
     denied = client.post("/api/create-order", headers=_login(client), json=_body(transaction_id="tx-hold"))
     assert denied.status_code == 403
     assert denied.json()["detail"]["action"] == "HOLD"
-    assert denied.json()["detail"]["secondary_outcome"] == "CONTINUE_HOLD"
+    assert denied.json()["detail"]["secondary_outcome"] == "PENDING"
     assert fake.creates == 0
     assert get_store().get_checkout_by_transaction("tx-hold") is None
 
