@@ -1,0 +1,181 @@
+{
+  "executed": true,
+  "dataset": "synthetic PaySim, chronological 60/20/20",
+  "threshold_source": "validation F1 only",
+  "tuned_on_test": false,
+  "replace_xgb_v3": false,
+  "calibrated_for_upi": false,
+  "note": "hour_of_day on PaySim is simulator step-hour/23, not a UPI wall clock. Short windows rarely contain more than the current step.",
+  "n_train": 6436,
+  "n_val": 2146,
+  "n_test": 2146,
+  "candidates": {
+    "A_saved_features": {
+      "features": [
+        "amount_zscore",
+        "new_payee",
+        "velocity_5m",
+        "velocity_60m",
+        "time_since_last",
+        "dist_from_home",
+        "dist_from_last",
+        "impossible_travel",
+        "vpn_proxy",
+        "missing_location",
+        "hour_of_day",
+        "amount_to_median",
+        "amount_spike",
+        "velocity_1m",
+        "velocity_5m_value",
+        "velocity_60m_value",
+        "new_device",
+        "recent_device_change",
+        "recipient_prior_count",
+        "history_size",
+        "missing_device",
+        "location_reliable"
+      ],
+      "n_features": 22,
+      "val": {
+        "roc_auc": 0.7402626582278481,
+        "average_precision": 0.9578579599019971,
+        "precision": 0.8843283582089553,
+        "recall": 1.0,
+        "fpr": 0.992,
+        "legit_approval_rate": 0.008,
+        "confusion": {
+          "tn": 2,
+          "fp": 248,
+          "fn": 0,
+          "tp": 1896
+        },
+        "threshold": 0.16951873898506165
+      },
+      "test": {
+        "roc_auc": 0.7285740149156977,
+        "average_precision": 0.985032797270136,
+        "precision": 0.9622025198320112,
+        "recall": 0.9995152690256908,
+        "fpr": 0.9759036144578314,
+        "legit_approval_rate": 0.024096385542168676,
+        "confusion": {
+          "tn": 2,
+          "fp": 81,
+          "fn": 1,
+          "tp": 2062
+        },
+        "threshold": 0.16951873898506165
+      }
+    },
+    "B_without_hour_of_day": {
+      "features": [
+        "amount_zscore",
+        "new_payee",
+        "velocity_5m",
+        "velocity_60m",
+        "time_since_last",
+        "dist_from_home",
+        "dist_from_last",
+        "impossible_travel",
+        "vpn_proxy",
+        "missing_location",
+        "amount_to_median",
+        "amount_spike",
+        "velocity_1m",
+        "velocity_5m_value",
+        "velocity_60m_value",
+        "new_device",
+        "recent_device_change",
+        "recipient_prior_count",
+        "history_size",
+        "missing_device",
+        "location_reliable"
+      ],
+      "n_features": 21,
+      "val": {
+        "roc_auc": 0.5027763713080169,
+        "average_precision": 0.8840238419360366,
+        "precision": 0.8835041938490215,
+        "recall": 1.0,
+        "fpr": 1.0,
+        "legit_approval_rate": 0.0,
+        "confusion": {
+          "tn": 0,
+          "fp": 250,
+          "fn": 0,
+          "tp": 1896
+        },
+        "threshold": 0.02164631336927414
+      },
+      "test": {
+        "roc_auc": 0.5125212434809523,
+        "average_precision": 0.9622574932057028,
+        "precision": 0.9613233923578751,
+        "recall": 1.0,
+        "fpr": 1.0,
+        "legit_approval_rate": 0.0,
+        "confusion": {
+          "tn": 0,
+          "fp": 83,
+          "fn": 0,
+          "tp": 2063
+        },
+        "threshold": 0.02164631336927414
+      }
+    },
+    "C_without_hour_and_short_velocity": {
+      "features": [
+        "amount_zscore",
+        "new_payee",
+        "velocity_5m",
+        "velocity_60m",
+        "time_since_last",
+        "dist_from_home",
+        "dist_from_last",
+        "impossible_travel",
+        "vpn_proxy",
+        "missing_location",
+        "amount_to_median",
+        "amount_spike",
+        "velocity_60m_value",
+        "new_device",
+        "recent_device_change",
+        "recipient_prior_count",
+        "history_size",
+        "missing_device",
+        "location_reliable"
+      ],
+      "n_features": 19,
+      "val": {
+        "roc_auc": 0.5027763713080169,
+        "average_precision": 0.8840238419360366,
+        "precision": 0.8835041938490215,
+        "recall": 1.0,
+        "fpr": 1.0,
+        "legit_approval_rate": 0.0,
+        "confusion": {
+          "tn": 0,
+          "fp": 250,
+          "fn": 0,
+          "tp": 1896
+        },
+        "threshold": 0.020608333870768547
+      },
+      "test": {
+        "roc_auc": 0.5125212434809523,
+        "average_precision": 0.9622574932057028,
+        "precision": 0.9617715617715618,
+        "recall": 1.0,
+        "fpr": 0.9879518072289156,
+        "legit_approval_rate": 0.012048192771084338,
+        "confusion": {
+          "tn": 1,
+          "fp": 82,
+          "fn": 0,
+          "tp": 2063
+        },
+        "threshold": 0.020608333870768547
+      }
+    }
+  }
+}

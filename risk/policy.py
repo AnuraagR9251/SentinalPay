@@ -1,8 +1,12 @@
-"""Action policy after the canonical ALLOW / REVIEW / BLOCK decision.
+"""Action shown to the payer, taken from the canonical 0–100 score.
 
-STEP_UP is not a rename of REVIEW. It is a follow-up action for mid-band
-REVIEW plus a corroborating signal (velocity, amount shock, impossible travel,
-or a first-time merchant/device on a larger send).
+    0–29   ALLOW
+    30–50  STEP_UP
+    51–69  HOLD
+    70–100 BLOCK
+
+Rules do not move a score into a different action. A missing model still
+cannot produce ALLOW.
 """
 
 from __future__ import annotations
@@ -57,18 +61,24 @@ def apply_routine_small_decision(
 
 
 def policy_action(result: Mapping[str, Any], amount: float | None = None) -> str:
+    del amount
     decision = str(result.get("decision") or "REVIEW")
-    if decision == "ALLOW":
-        return "ALLOW"
+    raw = result.get("risk_score")
+    try:
+        score = None if raw is None else int(raw)
+    except (TypeError, ValueError):
+        score = None
+    if score is not None and score >= 70:
+        return "BLOCK"
     if decision == "BLOCK":
         return "BLOCK"
-    names = _rule_names(result=result)
-    try:
-        rupees = float(amount if amount is not None else result.get("amount") or 0)
-    except (TypeError, ValueError):
-        rupees = 0.0
-    if names & SERIOUS_RULES:
-        return "STEP_UP"
-    if names & NEW_PARTY_RULES and rupees >= STEP_UP_NEW_PARTY_MIN_AMOUNT:
+    ml = result.get("ml") if isinstance(result.get("ml"), dict) else {}
+    if score is None:
+        return "ALLOW" if decision == "ALLOW" else "HOLD"
+    if score <= 29:
+        if ml.get("available") is False:
+            return "HOLD"
+        return "ALLOW"
+    if score <= 50:
         return "STEP_UP"
     return "HOLD"

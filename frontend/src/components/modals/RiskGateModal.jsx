@@ -6,7 +6,7 @@ import { useApp } from '../../context/AppContext';
 
 export const RiskGateModal = () => {
   const { riskGateModal, setRiskGateModal, user, sessionToken } = useApp();
-  const { isOpen, phase, riskTier, payeeName, amount, canonicalDecision, message, onContinue, pXgb, canonicalRiskScore, mlCalibrated, transactionId, deadline, reasons } = riskGateModal;
+  const { isOpen, phase, riskTier, payeeName, amount, canonicalDecision, message, onContinue, pXgb, canonicalRiskScore, mlCalibrated, transactionId, deadline, reasons, secondaryOutcome } = riskGateModal;
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -76,24 +76,35 @@ export const RiskGateModal = () => {
   }
 
   if (phase === 'hold') {
+    const finished = secondsLeft === 0;
+    const canContinue = finished && secondaryOutcome === 'ALLOW';
+    const stopped = finished && secondaryOutcome && secondaryOutcome !== 'ALLOW';
     return (
       <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">
-        <div className="w-full max-w-sm rounded-[36px] bg-slate-900 border border-amber-500/40 p-6 text-center shadow-2xl relative overflow-hidden">
-          <div className="absolute top-0 left-1/2 -translate-x-1/2 w-48 h-48 bg-amber-500/15 rounded-full blur-3xl pointer-events-none" />
+        <div className={`w-full max-w-sm rounded-[36px] bg-slate-900 p-6 text-center shadow-2xl relative overflow-hidden ${stopped ? 'border border-rose-500/40' : 'border border-orange-500/50'}`}>
+          <div className={`absolute top-0 left-1/2 -translate-x-1/2 w-48 h-48 rounded-full blur-3xl pointer-events-none ${stopped ? 'bg-rose-500/15' : 'bg-orange-500/20'}`} />
           <div className="relative my-4 inline-flex items-center justify-center">
-            <div className="w-16 h-16 rounded-full bg-amber-500/20 border-2 border-amber-400/40 flex items-center justify-center">
-              <Clock3 className="w-8 h-8 text-amber-300" />
+            <div className={`w-16 h-16 rounded-full flex items-center justify-center ${stopped ? 'bg-rose-500/20 border-2 border-rose-400/40' : 'bg-orange-500/20 border-2 border-orange-400/50'}`}>
+              {stopped ? <ShieldX className="w-8 h-8 text-rose-300" /> : <Clock3 className="w-8 h-8 text-orange-300" />}
             </div>
           </div>
-          <p className="text-xs uppercase tracking-wider font-bold text-amber-400">Pending security assessment</p>
+          <p className={`text-xs uppercase tracking-wider font-bold ${stopped ? 'text-rose-400' : 'text-orange-400'}`}>
+            {stopped ? 'Hold stopped' : 'Hold'}
+          </p>
           <h2 className="text-2xl font-black text-white font-heading mt-1">
             {user.currency}{Number(amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
           </h2>
-          <p className="text-4xl font-black text-amber-200 font-heading mt-3">
-            {secondsLeft == null ? '—' : `${secondsLeft}s`}
-          </p>
+          {!finished && (
+            <p className="text-4xl font-black text-orange-300 font-heading mt-3">
+              {secondsLeft == null ? '15s' : `${secondsLeft}s`}
+            </p>
+          )}
           <p className="text-sm text-slate-300 mt-2">
-            {message || SECONDARY_COPY.PENDING}
+            {stopped
+              ? (message || 'Payment was not completed.')
+              : canContinue
+                ? 'Checks passed. Continue to payment.'
+                : SECONDARY_COPY.PENDING}
           </p>
           {reasons && reasons.length ? (
             <p className="text-[11px] text-slate-400 mt-2">{reasons.join(', ')}</p>
@@ -101,18 +112,33 @@ export const RiskGateModal = () => {
           <p className="text-[11px] text-slate-500 mt-3 font-mono">
             {formatDecisionLine({
               canonicalDecision: canonicalDecision || 'REVIEW',
-              riskTier,
+              riskTier: 'HOLD',
               canonicalRiskScore: canonicalRiskScore,
               pXgb: pXgb,
               mlCalibrated: mlCalibrated,
             })}
           </p>
-          <button
-            onClick={close}
-            className="w-full mt-6 py-3 rounded-2xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold cursor-pointer"
-          >
-            OK
-          </button>
+          {canContinue ? (
+            <button
+              onClick={() => {
+                const go = onContinue;
+                close();
+                if (go) go();
+              }}
+              className="w-full mt-6 py-3 rounded-2xl bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold cursor-pointer"
+            >
+              Continue
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={stopped ? close : undefined}
+              disabled={!stopped}
+              className={`w-full mt-6 py-3 rounded-2xl text-white text-xs font-bold ${stopped ? 'bg-rose-600 hover:bg-rose-500 cursor-pointer' : 'bg-orange-700/70 cursor-default'}`}
+            >
+              {stopped ? 'Stop' : 'Waiting'}
+            </button>
+          )}
         </div>
       </div>
     );

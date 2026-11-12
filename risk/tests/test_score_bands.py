@@ -37,18 +37,10 @@ def test_missing_model_cannot_allow() -> None:
     assert out.decision == "REVIEW"
 
 
-def test_review_actions_stay_on_the_existing_policy() -> None:
-    serious = policy_action(
-        {"decision": "REVIEW", "amount": 100, "rules": {"triggered_rules": [{"rule": "HIGH_VELOCITY"}]}}
-    )
-    assert serious == "STEP_UP"
-    new_party = policy_action(
-        {"decision": "REVIEW", "amount": 48000, "rules": {"triggered_rules": [{"rule": "NEW_MERCHANT"}]}}
-    )
-    assert new_party == "STEP_UP"
-    other = policy_action({"decision": "REVIEW", "amount": 100, "rules": {"triggered_rules": []}})
-    assert other == "HOLD"
-    small_new = policy_action(
-        {"decision": "REVIEW", "amount": 200, "rules": {"triggered_rules": [{"rule": "NEW_DEVICE"}]}}
-    )
-    assert small_new == "HOLD"
+def test_review_actions_follow_the_score() -> None:
+    assert policy_action({"decision": "REVIEW", "risk_score": 30}) == "STEP_UP"
+    assert policy_action({"decision": "REVIEW", "risk_score": 50}) == "STEP_UP"
+    assert policy_action({"decision": "REVIEW", "risk_score": 51}) == "HOLD"
+    assert policy_action({"decision": "REVIEW", "risk_score": 69}) == "HOLD"
+    assert policy_action({"decision": "REVIEW", "risk_score": 29}) == "ALLOW"
+    assert policy_action({"decision": "BLOCK", "risk_score": 71}) == "BLOCK"

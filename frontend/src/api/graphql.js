@@ -62,6 +62,7 @@ function toRestShape(node) {
     ml_calibrated_for_upi: node.mlCalibratedForUpi,
     ml_evaluation: node.mlEvaluation || null,
     score_components: node.scoreComponents || null,
+    explanation: node.explanation || null,
     top_contributing_features: node.topContributingFeatures || [],
     contributions: node.contributions || []
   };

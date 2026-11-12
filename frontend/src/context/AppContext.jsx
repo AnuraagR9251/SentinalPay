@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import confetti from 'canvas-confetti';
 import { sound } from '../utils/audio';
 import {
@@ -15,6 +15,7 @@ import {
 } from '../data/mockData';
 import { loginViaGraphql, scoreViaGraphql, verifyPinViaGraphql } from '../api/graphql';
 import { mayMutateBalance } from '../api/holdAssessment';
+import { attemptKey, claimAttempt, releaseAttempt, withinUpiLimit } from '../api/paymentAttempt';
 import { openRazorpayCheckout, rupeesToPaise } from '../api/razorpayCheckout';
 import { SECONDARY_COPY, paymentGate } from '../api/scoreDisplay';
 import { applyClientLogout, demoResetImpliesSuccess, logoutViaRest, scoreApiRoot } from '../api/session';
@@ -158,6 +159,7 @@ export const AppProvider = ({ children }) => {
   const [sessionToken, setSessionToken] = useState(() => localStorage.getItem(`${STORAGE_KEY}_token`) || '');
   const [authError, setAuthError] = useState('');
   const [lastScore, setLastScore] = useState(null);
+  const paymentAttempts = useRef({});
   const [lastLab, setLastLab] = useState(null);
   const requireLogin = import.meta.env.VITE_REQUIRE_LOGIN === '1';
 
@@ -233,10 +235,28 @@ export const AppProvider = ({ children }) => {
     });
   };
 
+  const claimPaymentAttempt = ({ userId, amount, merchantId, deviceId, latitude, longitude }) => {
+    const key = attemptKey({ userId, amount, merchantId, deviceId, latitude, longitude });
+    return claimAttempt(paymentAttempts.current, key, Date.now());
+  };
+
+  const finishPaymentAttempt = ({ userId, amount, merchantId, deviceId, latitude, longitude }) => {
+    releaseAttempt(paymentAttempts.current, attemptKey({ userId, amount, merchantId, deviceId, latitude, longitude }));
+  };
+
   // Execute transaction after PIN approval
   const executePayment = ({ recipient, amount, category, method, note, transactionId, score, razorpay }) => {
     const numAmount = parseFloat(amount);
     if (isNaN(numAmount) || numAmount <= 0) return;
+    const loc = payerLocation() || {};
+    finishPaymentAttempt({
+      userId: user.upiId,
+      amount: numAmount,
+      merchantId: recipient.upiId || 'upi@senitenial',
+      deviceId: user.deviceId || '',
+      latitude: loc.lat,
+      longitude: loc.lon,
+    });
 
     if ((method || "").includes("Wallet")) {
       setUser(prev => ({
@@ -322,7 +342,7 @@ export const AppProvider = ({ children }) => {
     });
   };
 
-  const continueHeldCheckout = async ({ recipient, amount, category, note, transactionId }) => {
+  const continueHeldCheckout = async ({ recipient, amount, category, note, transactionId, timestamp }) => {
     const paise = rupeesToPaise(amount);
     const key = import.meta.env.VITE_RAZORPAY_KEY_ID;
     if (!paise || !key) {
@@ -346,7 +366,7 @@ export const AppProvider = ({ children }) => {
           merchant_id: recipient.upiId || 'upi@senitenial',
           merchant_category: category || 'p2p',
           device_id: user.deviceId || null,
-          timestamp: new Date().toISOString(),
+          timestamp: timestamp || new Date().toISOString(),
           latitude: loc.lat,
           longitude: loc.lon,
           receipt: transactionId.slice(0, 40),
@@ -424,10 +444,19 @@ export const AppProvider = ({ children }) => {
 
   const scoreAndExecutePayment = async ({ recipient, amount, category, method, note, onCleared }) => {
     const numAmount = parseFloat(amount);
-    if (isNaN(numAmount) || numAmount <= 0) return;
+    if (!withinUpiLimit(numAmount)) return;
 
-    const transactionId = `tx-${Date.now()}`;
     const payee = recipient.upiId || 'upi@senitenial';
+    const loc = payerLocation() || {};
+    const attempt = claimPaymentAttempt({
+      userId: user.upiId,
+      amount: numAmount,
+      merchantId: payee,
+      deviceId: user.deviceId || '',
+      latitude: loc.lat,
+      longitude: loc.lon,
+    });
+    const transactionId = attempt.transactionId;
     const known = new Set([
       ...contacts.map((c) => c.upiId),
       ...transactions.map((t) => t.upiId)
@@ -449,8 +478,8 @@ export const AppProvider = ({ children }) => {
           amount: numAmount,
           payeeVpa: payee,
           userId: user.upiId,
-          timestamp: new Date().toISOString(),
-          payerLocation: payerLocation(),
+          timestamp: attempt.timestamp,
+          payerLocation: loc.lat == null ? null : loc,
           deviceId: user.deviceId || null,
           isNewPayee: !known.has(payee),
           purpose: category || note || 'p2p_transfer'
@@ -501,6 +530,7 @@ export const AppProvider = ({ children }) => {
           ...prev,
           phase: 'hold',
           transactionId,
+          deadline: new Date(Date.now() + 15000).toISOString(),
           riskTier: data.action || 'HOLD',
           riskScore: data.canonical_risk_score,
           canonicalRiskScore: data.canonical_risk_score,
@@ -508,7 +538,8 @@ export const AppProvider = ({ children }) => {
           mlCalibrated: data.ml_calibrated_for_upi,
           canonicalDecision: data.canonical_decision,
           message: SECONDARY_COPY.PENDING,
-          onContinue: () => continueHeldCheckout({ recipient, amount: numAmount, category, note, transactionId })
+          reasons: (data.explanation && data.explanation.triggered_rules) || data.reason_codes || [],
+          onContinue: settle
         }));
         return;
       }
@@ -520,7 +551,8 @@ export const AppProvider = ({ children }) => {
         canonicalRiskScore: data.canonical_risk_score,
         pXgb: data.P_xgb,
         mlCalibrated: data.ml_calibrated_for_upi,
-        canonicalDecision: data.canonical_decision
+        canonicalDecision: data.canonical_decision,
+        reasons: (data.explanation && data.explanation.triggered_rules) || data.reason_codes || [],
       }));
     } catch (err) {
       console.log('[SentinalPay /score] error', err);
@@ -746,6 +778,7 @@ export const AppProvider = ({ children }) => {
         setRiskGateModal,
         startPaymentFlow,
         executePayment,
+        claimPaymentAttempt,
         scoreAndExecutePayment,
         claimScratchCard,
         payBill,

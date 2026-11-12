@@ -21,15 +21,26 @@ export function holdView(row) {
     riskTier: 'HOLD',
   };
   if (base.canonicalRiskScore == null) base.canonicalRiskScore = null;
-  if (outcome === 'ALLOW') return { ...base, phase: 'cleared', message: SECONDARY_COPY.ALLOW };
-  if (outcome === 'DECLINE') return { ...base, phase: 'block', message: SECONDARY_COPY.DECLINE };
-  if (outcome === 'EXPIRED') return { ...base, phase: 'block', message: SECONDARY_COPY.EXPIRED };
-  if (outcome === 'PENDING') return { ...base, phase: 'hold', message: SECONDARY_COPY.PENDING };
+  if (outcome === 'ALLOW' || outcome === 'PENDING' || outcome === 'DECLINE' || outcome === 'EXPIRED') {
+    const message = outcome === 'ALLOW'
+      ? SECONDARY_COPY.ALLOW
+      : outcome === 'DECLINE'
+        ? SECONDARY_COPY.DECLINE
+        : outcome === 'EXPIRED'
+          ? SECONDARY_COPY.EXPIRED
+          : SECONDARY_COPY.PENDING;
+    return { ...base, phase: 'hold', message };
+  }
   return {
     ...base,
     phase: 'error',
     message: 'Security assessment could not be confirmed. Payment was not completed.',
   };
+}
+
+export function holdContinueReady(view, now = Date.now()) {
+  if (!view || view.secondaryOutcome !== 'ALLOW') return false;
+  return remainingSeconds(view.deadline, now) === 0;
 }
 
 export function mayMutateBalance(settled) {

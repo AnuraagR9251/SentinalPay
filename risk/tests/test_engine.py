@@ -156,6 +156,12 @@ def test_velocity_on_small_amount_still_steps_up(tmp_path: Path) -> None:
         )
     names = {item["rule"] for item in last["rules"]["triggered_rules"]}
     assert "HIGH_VELOCITY" in names
-    assert last["decision"] in {"REVIEW", "BLOCK"}
-    if last["decision"] == "REVIEW":
+    score = int(last["risk_score"])
+    if score <= 29:
+        assert last["action"] == "ALLOW"
+    elif score <= 50:
         assert last["action"] == "STEP_UP"
+    elif score <= 69:
+        assert last["action"] == "HOLD"
+    else:
+        assert last["action"] == "BLOCK"

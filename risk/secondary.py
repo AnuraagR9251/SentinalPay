@@ -9,9 +9,10 @@ Lifecycle, enforced by stored timestamps (no sleep):
     PENDING → DECLINE
     ALLOW → EXPIRED
 
-The row records created_at and a 15-second deadline. Sufficient evidence is
-finalized immediately. Unresolved or failed evidence stays PENDING and becomes
-DECLINE at the deadline. An ALLOW is payable only until that same deadline.
+The row records created_at and a 15-second deadline. That deadline is the orange
+timer. Unresolved evidence stays PENDING and becomes DECLINE at the deadline.
+An ALLOW stays payable for a short click after the timer so Continue can open
+UPI or Razorpay.
 
 ALLOW requires every one of these, and nothing else is treated as safety:
 
@@ -34,7 +35,7 @@ the deadline, then DECLINE. They are not proof of fraud and not proof of safety.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
 from detection.features.location import haversine_km
@@ -51,6 +52,9 @@ LOCATION_APPROVE_KM = 50
 SPEED_REJECT_KMH = 800
 ASSESSMENT_DEADLINE_S = 15
 APPROVAL_TTL_S = ASSESSMENT_DEADLINE_S
+# The orange timer ends at expires_at. Continue is offered then, so an ALLOW
+# stays payable for this long after the timer instead of dying on the same second.
+PAY_AFTER_TIMER_S = 60
 OUTCOMES = ("PENDING", "ALLOW", "DECLINE", "EXPIRED")
 _TERMINAL = ("ALLOW", "DECLINE", "EXPIRED")
 
@@ -348,7 +352,7 @@ def advance_assessment(store: Any, transaction_id: str, now: datetime | None = N
             [*reasons, "deadline_expired"],
             from_outcomes=("PENDING",),
         )
-    if outcome == "ALLOW" and due:
+    if outcome == "ALLOW" and deadline is not None and moment >= deadline + timedelta(seconds=PAY_AFTER_TIMER_S):
         return store.finalize_secondary(
             transaction_id,
             "EXPIRED",

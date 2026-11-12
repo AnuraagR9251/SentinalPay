@@ -255,6 +255,7 @@ def _score_payload(result: dict[str, Any], *, public: bool = False) -> ScorePayl
         ml_calibrated_for_upi=fields.get("ml_calibrated_for_upi"),
         ml_evaluation=fields.get("ml_evaluation"),
         score_components=fields.get("score_components"),
+        explanation=result.get("explanation"),
     )
 
 

@@ -141,6 +141,7 @@ class ScoreResponse(BaseModel):
     ml_calibrated_for_upi: bool | None = None
     ml_evaluation: str | None = None
     score_components: dict[str, float] | None = None
+    explanation: dict[str, Any] | None = None
 
 
 class PrettyJSONResponse(JSONResponse):
@@ -579,6 +580,7 @@ def score(payload: ScoreRequest, request: Request) -> ScoreResponse:
             "challenge_id": result.get("challenge_id"),
             "challenge_kind": result.get("challenge_kind"),
             "challenge_note": result.get("challenge_note"),
+            "explanation": result.get("explanation"),
         }
     )
 
@@ -809,6 +811,7 @@ def _checkout_body(
         "action": scored.get("action"),
         "decision": scored.get("decision"),
         "risk_score": scored.get("risk_score"),
+        "explanation": scored.get("explanation"),
         "payment_status": status,
         "settled": status == "captured",
     }

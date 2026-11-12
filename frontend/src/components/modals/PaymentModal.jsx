@@ -207,11 +207,13 @@ export const PaymentModal = () => {
       });
       };
       if (body.secondary_outcome === 'ALLOW') {
-        showGate('cleared', {
+        showGate('hold', {
           canonicalDecision: body.decision,
           canonicalRiskScore: body.risk_score,
           riskTier: 'HOLD',
-          message: SECONDARY_COPY.ALLOW,
+          secondaryOutcome: 'ALLOW',
+          deadline: new Date(Date.now() + 15000).toISOString(),
+          message: SECONDARY_COPY.PENDING,
           onContinue: startRazorpay
         });
         return;

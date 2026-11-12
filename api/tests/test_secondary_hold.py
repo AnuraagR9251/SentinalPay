@@ -299,7 +299,7 @@ def test_expired_approval_is_not_renewed(monkeypatch) -> None:
             "ttl_s": APPROVAL_TTL_S,
         }
     )
-    past = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+    past = (datetime.now(timezone.utc) - timedelta(seconds=APPROVAL_TTL_S + 65)).isoformat()
     with store._connect() as conn:
         conn.execute(
             "UPDATE secondary_assessments SET expires_at = ? WHERE transaction_id = ?",

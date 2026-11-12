@@ -6,45 +6,16 @@ from risk.policy import apply_routine_small_decision, policy_action
 _REVIEW = DecisionResult(risk_score=40, decision="REVIEW", confidence=0.5, risk_factors=())
 
 
-def test_review_plus_new_merchant_is_step_up() -> None:
-    action = policy_action(
-        {
-            "decision": "REVIEW",
-            "amount": 48000,
-            "rules": {"triggered_rules": [{"rule": "NEW_MERCHANT"}]},
-        }
-    )
-    assert action == "STEP_UP"
-
-
-def test_small_new_party_review_is_hold_not_step_up() -> None:
-    assert (
-        policy_action(
-            {
-                "decision": "REVIEW",
-                "amount": 200,
-                "rules": {"triggered_rules": [{"rule": "NEW_DEVICE"}]},
-            }
-        )
-        == "HOLD"
-    )
-
-
-def test_small_velocity_review_is_step_up() -> None:
-    assert (
-        policy_action(
-            {
-                "decision": "REVIEW",
-                "amount": 200,
-                "rules": {"triggered_rules": [{"rule": "HIGH_VELOCITY"}]},
-            }
-        )
-        == "STEP_UP"
-    )
-
-
-def test_review_without_new_party_is_hold() -> None:
-    assert policy_action({"decision": "REVIEW", "rules": {"triggered_rules": []}}) == "HOLD"
+def test_action_follows_the_score_band() -> None:
+    assert policy_action({"decision": "ALLOW", "risk_score": 0}) == "ALLOW"
+    assert policy_action({"decision": "ALLOW", "risk_score": 29}) == "ALLOW"
+    assert policy_action({"decision": "REVIEW", "risk_score": 30, "rules": {"triggered_rules": [{"rule": "HIGH_VELOCITY"}]}}) == "STEP_UP"
+    assert policy_action({"decision": "REVIEW", "risk_score": 50, "amount": 48000, "rules": {"triggered_rules": [{"rule": "NEW_MERCHANT"}]}}) == "STEP_UP"
+    assert policy_action({"decision": "REVIEW", "risk_score": 51}) == "HOLD"
+    assert policy_action({"decision": "REVIEW", "risk_score": 69, "rules": {"triggered_rules": [{"rule": "HIGH_VELOCITY"}]}}) == "HOLD"
+    assert policy_action({"decision": "BLOCK", "risk_score": 70}) == "BLOCK"
+    assert policy_action({"decision": "BLOCK", "risk_score": 100}) == "BLOCK"
+    assert policy_action({"decision": "REVIEW", "risk_score": 0, "ml": {"available": False}}) == "HOLD"
 
 
 def test_allow_and_block_stay_canonical() -> None:

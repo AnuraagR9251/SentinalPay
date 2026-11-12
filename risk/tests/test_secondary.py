@@ -159,9 +159,15 @@ def test_deadline_declines_pending_and_expires_allow(tmp_path: Path) -> None:
     _row(store, "ALLOW", "tx-allow")
     later = datetime.now(timezone.utc) + timedelta(seconds=ASSESSMENT_DEADLINE_S + 1)
     pending = advance_assessment(store, "tx-pending", now=later)
-    allowed = advance_assessment(store, "tx-allow", now=later)
+    still_open = advance_assessment(store, "tx-allow", now=later)
     assert pending["outcome"] == "DECLINE"
     assert "deadline_expired" in pending["reasons"]
+    assert still_open["outcome"] == "ALLOW"
+    allowed = advance_assessment(
+        store,
+        "tx-allow",
+        now=later + timedelta(seconds=60),
+    )
     assert allowed["outcome"] == "EXPIRED"
     assert "approval_expired" in allowed["reasons"]
     again = advance_assessment(store, "tx-pending", now=later)
