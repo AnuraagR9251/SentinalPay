@@ -67,6 +67,65 @@ def require_login() -> bool:
     return os.getenv("SENTINALPAY_REQUIRE_LOGIN", "").strip() in {"1", "true", "yes"}
 
 
+ADMIN_COOKIE = "sp_admin"
+ADMIN_CSRF_HEADER = "X-SentinalPay-Admin"
+
+
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes"}
+
+
+def admin_cookie_secure() -> bool:
+    """Secure cookies are for HTTPS. Local HTTP must leave this off or the browser drops them."""
+    return _env_flag("SENTINALPAY_COOKIE_SECURE")
+
+
+def apply_admin_cookie(response: Any, token: str) -> None:
+    raw = os.getenv("SENTINALPAY_ADMIN_SESSION_TTL_SECONDS", "28800")
+    try:
+        ttl = max(1, int(raw or 28800))
+    except ValueError:
+        ttl = 28800
+    response.set_cookie(
+        key=ADMIN_COOKIE,
+        value=token,
+        max_age=ttl,
+        httponly=True,
+        samesite="lax",
+        secure=admin_cookie_secure(),
+        path="/",
+    )
+
+
+def clear_admin_cookie(response: Any) -> None:
+    response.delete_cookie(
+        key=ADMIN_COOKIE,
+        path="/",
+        httponly=True,
+        samesite="lax",
+        secure=admin_cookie_secure(),
+    )
+
+
+def require_admin_session(request: Request) -> str:
+    """Desk cookie only. A demo bearer token is not an administrator session."""
+    from risk.store import get_store
+
+    token = (request.cookies.get(ADMIN_COOKIE) or "").strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="admin login required")
+    username = get_store().session_admin(token)
+    if not username:
+        raise HTTPException(status_code=401, detail="invalid session")
+    return username
+
+
+def require_admin_csrf(request: Request) -> None:
+    """Custom header so a cross-site form cannot submit a desk cookie."""
+    if (request.headers.get(ADMIN_CSRF_HEADER) or "").strip() != "1":
+        raise HTTPException(status_code=403, detail="csrf check failed")
+
+
 def open_access_warning() -> str | None:
     """Local demo may leave scoring open. An API key is not production user auth."""
     if require_login():

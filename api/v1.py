@@ -13,6 +13,8 @@ from risk.auth import (
     assert_http_rate_limit,
     authenticate_request,
     bearer_token,
+    require_admin_csrf,
+    require_admin_session,
     require_login,
     require_session,
 )
@@ -83,8 +85,8 @@ def review(
     _key: str = Depends(authenticate_request),
 ) -> dict[str, Any]:
     assert_http_rate_limit(_key)
-    if require_login():
-        require_session(request)
+    require_admin_session(request)
+    require_admin_csrf(request)
     try:
         return get_store().submit_review(transaction_id.strip(), payload.decision, payload.reason.strip())
     except KeyError as exc:
@@ -98,8 +100,7 @@ def reviews(
     _key: str = Depends(authenticate_request),
 ) -> list[dict[str, Any]]:
     assert_http_rate_limit(_key)
-    if require_login():
-        require_session(request)
+    require_admin_session(request)
     if status != "PENDING":
         return []
     return get_store().pending_reviews()

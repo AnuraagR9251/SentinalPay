@@ -24,7 +24,7 @@ from typing import Any
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
@@ -36,14 +36,18 @@ from api.v1 import router as v1_router
 from detection.privacy import mask_identifier
 from payments.razorpay import RazorpayConfigError, get_razorpay_adapter
 from risk.auth import (
+    apply_admin_cookie,
     assert_login_not_locked,
     authenticate_request,
     bearer_token,
+    clear_admin_cookie,
     login_throttle_key,
     logout_request,
     note_login_failure,
     open_access_warning,
     protect_sensitive,
+    require_admin_csrf,
+    require_admin_session,
     require_login,
     require_order_auth,
     require_session,
@@ -405,6 +409,7 @@ def root() -> dict[str, str]:
         "transactions": "/transactions",
         "evaluate": "/api/v1/transactions/evaluate",
         "ready": "/ready",
+        "admin_login": "/admin/login",
     }
 
 
@@ -501,6 +506,41 @@ def logout(request: Request) -> dict[str, Any]:
     return logout_request(request)
 
 
+class AdminLoginRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=64)
+    password: str = Field(..., min_length=1, max_length=128)
+
+
+@app.post("/admin/login")
+def admin_login(payload: AdminLoginRequest, request: Request, response: Response) -> dict[str, Any]:
+    store = get_store()
+    username = payload.username.strip()
+    throttle = login_throttle_key(f"admin:{username}", request)
+    assert_login_not_locked(store, throttle)
+    if not store.verify_admin(username, payload.password):
+        note_login_failure(store, throttle)
+        raise HTTPException(status_code=401, detail="invalid credentials")
+    token = store.create_session(username, kind="admin")
+    apply_admin_cookie(response, token)
+    return {"ok": True, "username": username}
+
+
+@app.post("/admin/logout")
+def admin_logout(request: Request, response: Response) -> dict[str, Any]:
+    require_admin_session(request)
+    require_admin_csrf(request)
+    token = (request.cookies.get("sp_admin") or "").strip()
+    if token:
+        get_store().revoke_session(token)
+    clear_admin_cookie(response)
+    return {"ok": True}
+
+
+@app.get("/admin/session")
+def admin_session(request: Request) -> dict[str, str]:
+    return {"username": require_admin_session(request)}
+
+
 @app.post("/pin/verify")
 def verify_pin(payload: PinRequest, request: Request) -> dict[str, Any]:
     return verify_pin_request(request, payload.pin, payload.challenge_id)
@@ -588,10 +628,9 @@ def razorpay_order(payload: RazorpayOrderRequest, request: Request) -> dict[str,
 
 @app.get("/transactions", response_model=TransactionFeed, response_class=PrettyJSONResponse)
 def transactions(request: Request, limit: int = Query(default=50, ge=1, le=200)) -> TransactionFeed:
-    """Newest-first sandbox desk feed. Nested so payment, decision, and models stay distinct."""
+    """Newest-first sandbox desk feed. Admin cookie required even when payer login is off."""
     protect_sensitive(request)
-    if require_login():
-        require_session(request)
+    require_admin_session(request)
     cap = min(limit, max(10, int(os.getenv("SENTINALPAY_FEED_MAX", "100"))))
     items = [_feed_item(row) for row in get_store().recent_evaluations(cap)]
     return TransactionFeed(count=len(items), items=items)

@@ -63,7 +63,7 @@ Razorpay TEST mode is advisory. This service cannot veto authorization. A browse
 
 Training eval is **synthetic PaySim** (chrono 60/20/20, vs rules + logistic regression, precision-recall / review catch vs extra reviews). No labeled UPI holdout was available. Drain/CASH_OUT flags are not ML features.
 
-If the XGBoost file is missing, the engine does **not** treat ML as 0. It uses a conservative prior of 0.5 (40% layer → 20 points) and will not return ALLOW. `GET /health` reports `model_loaded`, `ml_fallback`, `open_sandbox`, and `auth_warning`. Default `SENTINALPAY_REQUIRE_LOGIN=0` is an open local sandbox; an API key is not end-user authentication. When `SENTINALPAY_API_KEY` is set, REST and GraphQL score/evaluate/feed/reviews/PIN require `X-API-Key`. Set `SENTINALPAY_REQUIRE_LOGIN=1` to bind score/evaluate/feed/reviews/PIN and Razorpay order creation to a bearer session. Review list/submit have no admin role — any logged-in demo user. API-key-only order creation is allowed only when login is off (service-to-service TEST adapter). HTTP 429 uses `SENTINALPAY_HTTP_RATE_LIMIT_PER_MIN` (in-process unless Redis is configured).
+If the XGBoost file is missing, the engine does **not** treat ML as 0. It uses a conservative prior of 0.5 (40% layer → 20 points) and will not return ALLOW. `GET /health` reports `model_loaded`, `ml_fallback`, `open_sandbox`, and `auth_warning`. Default `SENTINALPAY_REQUIRE_LOGIN=0` is an open local sandbox; an API key is not end-user authentication. When `SENTINALPAY_API_KEY` is set, REST and GraphQL score/evaluate/feed/reviews/PIN require `X-API-Key`. Set `SENTINALPAY_REQUIRE_LOGIN=1` to bind score/evaluate/PIN and Razorpay order creation to a demo bearer session. The fraud desk (`GET /transactions`, reviews, GraphQL `transactions`) always requires the admin cookie from `POST /admin/login`, including when payer login is off. A demo bearer token does not open the desk. API-key-only order creation is allowed only when login is off (service-to-service TEST adapter). HTTP 429 uses `SENTINALPAY_HTTP_RATE_LIMIT_PER_MIN` (in-process unless Redis is configured).
 
 Identical retries with the same `transaction_id` and the same user/amount/currency/merchant return the stored result (one audit row). Reusing that ID with different material fields is HTTP 409 and does not leak the original score.
 
@@ -91,9 +91,11 @@ http://127.0.0.1:8000/graphql
 
 REST `/score`, `/login`, and `/pin/verify` stay.
 
-Demo login (sandbox only, not a bank account): `aarav@senitenial` / `demo123` / PIN `1234`. Sessions expire (default 12h) and are stored hashed. Set `SENTINALPAY_REQUIRE_LOGIN=1` before enabling Razorpay keys. SentinalPay is not a real payment processor.
+Demo payer login (sandbox only, not a bank account): `aarav@senitenial` / `demo123` / PIN `1234`. Payer sessions expire (default 12h) and are stored hashed. Set `SENTINALPAY_REQUIRE_LOGIN=1` before enabling Razorpay keys. SentinalPay is not a real payment processor.
 
-Frontend: `npm run dev` in `frontend/`. Set `VITE_REQUIRE_LOGIN=1` to show the login gate.
+Fraud desk login is separate. Put `SENTINALPAY_ADMIN_USERNAME` and `SENTINALPAY_ADMIN_PASSWORD` in `.env` (never commit it). Start the API, then open the Streamlit desk and sign in with that username and password. The password is hashed with Argon2id into the local database. To reset it, set a new password in `.env` and restart the API, then remove the password line. Desk sessions last 8 hours by default (`SENTINALPAY_ADMIN_SESSION_TTL_SECONDS`). Leave `SENTINALPAY_COOKIE_SECURE=0` for local HTTP.
+
+Frontend: `npm run dev` in `frontend/`. Set `VITE_REQUIRE_LOGIN=1` to show the sandbox payer login. That screen is not the fraud desk.
 
 Run the sandbox together (three terminals from the repo root):
 
@@ -103,7 +105,7 @@ cd frontend && npx vite --host 127.0.0.1 --port 5173
 py -3 -m streamlit run dashboard/app.py
 ```
 
-The desk polls `GET /transactions` only. It does not switch to the unused `SimulatedStream`. React balances, UTRs, and rewards are local sandbox values — ALLOW is not a bank settlement.
+The desk polls `GET /transactions` only after you sign in. Log out from the button on the desk. It does not switch to the unused `SimulatedStream`. React balances, UTRs, and rewards are local sandbox values — ALLOW is not a bank settlement.
 
 Retrain the model after changing features **only if the PaySim CSV is already on disk** (not committed; can be hundreds of MB):
 

@@ -119,9 +119,7 @@ def _nearest_city(lat: float | None, lon: float | None) -> str:
 
 def _init_state() -> None:
     if "source" not in st.session_state or not hasattr(st.session_state.source, "pull"):
-        source = HttpTransactionSource()
-        source.pull()
-        st.session_state.source = source
+        st.session_state.source = HttpTransactionSource()
     if "paused" not in st.session_state:
         st.session_state.paused = False
     if "selected_txn_id" not in st.session_state:
@@ -462,10 +460,50 @@ def _live_desk() -> None:
     _render_desk()
 
 
+def _desk_login(source: HttpTransactionSource) -> bool:
+    """Block the feed until the scoring API accepts the desk cookie."""
+    source.admin_cookie = st.session_state.get("admin_cookie") or None
+    if source.admin_cookie:
+        state = source.refresh_admin()
+        if state == "ok":
+            st.session_state.admin_cookie = source.admin_cookie
+            st.session_state.admin_username = source.admin_username
+            return True
+        if state == "unreachable":
+            return True
+        st.session_state.pop("admin_cookie", None)
+        st.session_state.pop("admin_username", None)
+
+    st.markdown("### SentinalPay")
+    st.caption("Fraud desk sign-in. This is the administrator session, not a customer login.")
+    with st.form("desk_login"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Log in")
+    if submitted:
+        with st.spinner("Signing in…"):
+            error = source.login_admin(username, password)
+        if error:
+            st.error(error)
+        elif source.admin_cookie:
+            st.session_state.admin_cookie = source.admin_cookie
+            st.session_state.admin_username = source.admin_username
+            st.rerun()
+    return False
+
+
 def main() -> None:
     _init_state()
     source: HttpTransactionSource = st.session_state.source
+    if not _desk_login(source):
+        return
     _inject_header(st.session_state.paused)
+    signed_in = st.session_state.get("admin_username") or source.admin_username
+    if signed_in and st.button("Log out"):
+        source.logout_admin()
+        st.session_state.pop("admin_cookie", None)
+        st.session_state.pop("admin_username", None)
+        st.rerun()
 
     c1, c2, c3, c4 = st.columns((2.2, 1, 1, 1))
     st.session_state.paused = c1.toggle("Pause live feed", value=st.session_state.paused)

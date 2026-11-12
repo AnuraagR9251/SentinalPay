@@ -23,6 +23,7 @@ from risk.auth import (
     note_login_failure,
     open_access_warning,
     protect_sensitive,
+    require_admin_session,
     require_login,
     require_session,
     verify_pin_request,
@@ -286,8 +287,10 @@ class Query:
     @strawberry.field
     def transactions(self, info: Info, limit: int = 50) -> list[ScorePayload]:
         _protect(info)
-        if require_login():
-            _session_user(info)
+        try:
+            require_admin_session(_request(info))
+        except HTTPException as exc:
+            _raise_http(exc)
         rows = get_store().recent_evaluations(min(max(limit, 1), 200))
         out: list[ScorePayload] = []
         for row in rows:

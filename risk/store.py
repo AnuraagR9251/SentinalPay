@@ -213,7 +213,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     token TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    expires_at TEXT
+    expires_at TEXT,
+    kind TEXT NOT NULL DEFAULT 'user'
+);
+CREATE TABLE IF NOT EXISTS admin_accounts (
+    username TEXT PRIMARY KEY,
+    password_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS payment_events (
     event_id TEXT PRIMARY KEY,
@@ -334,10 +340,16 @@ class RiskStore:
             else:
                 conn.executescript(_SCHEMA)
                 self._ensure_sqlite_columns(conn)
+            if self._pg:
+                conn.execute(
+                    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'user'"
+                )
+                conn.commit()
         if seed_demo is None:
             seed_demo = path is None
         if seed_demo:
             self.ensure_demo_accounts()
+        self.ensure_admin_from_env()
 
     def _ensure_sqlite_columns(self, conn: Any) -> None:
         assessments = {row[1] for row in conn.execute("PRAGMA table_info(risk_assessments)")}
@@ -346,6 +358,8 @@ class RiskStore:
         sessions = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
         if "expires_at" not in sessions:
             conn.execute("ALTER TABLE sessions ADD COLUMN expires_at TEXT")
+        if "kind" not in sessions:
+            conn.execute("ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'user'")
         conn.commit()
 
     def _exec_script(self, conn: Any, script: str) -> None:
@@ -755,6 +769,53 @@ class RiskStore:
         stored = row["password_hash"] if not isinstance(row, tuple) else row[0]
         return verify_secret(password, stored)
 
+    def ensure_admin_from_env(self) -> None:
+        username = os.getenv("SENTINALPAY_ADMIN_USERNAME", "").strip()
+        password = os.getenv("SENTINALPAY_ADMIN_PASSWORD", "")
+        if not username or not password:
+            return
+        self.upsert_admin(username, password)
+
+    def upsert_admin(self, username: str, password: str) -> None:
+        from risk.passwords import hash_admin_password
+
+        digest = hash_admin_password(password)
+        now = datetime.now(timezone.utc).isoformat()
+        with _LOCK, self._connect() as conn:
+            existing = conn.execute(
+                "SELECT 1 FROM admin_accounts WHERE username = ?",
+                (username,),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE admin_accounts SET password_hash = ? WHERE username = ?",
+                    (digest, username),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO admin_accounts (username, password_hash, created_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (username, digest, now),
+                )
+            conn.commit()
+
+    def verify_admin(self, username: str, password: str) -> bool:
+        from risk.passwords import dummy_admin_hash, verify_admin_password
+
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT password_hash FROM admin_accounts WHERE username = ?",
+                (username,),
+            ).fetchone()
+        if row is None:
+            stored = dummy_admin_hash()
+        else:
+            stored = row["password_hash"] if not isinstance(row, tuple) else row[0]
+        ok = verify_admin_password(password, stored)
+        return row is not None and ok
+
     def verify_pin(self, user_id: str, pin: str) -> bool:
         from risk.passwords import verify_secret
 
@@ -768,7 +829,7 @@ class RiskStore:
         stored = row["pin_hash"] if not isinstance(row, tuple) else row[0]
         return verify_secret(pin, stored)
 
-    def create_session(self, user_id: str) -> str:
+    def create_session(self, user_id: str, *, kind: str = "user") -> str:
         import secrets
         from datetime import timedelta
 
@@ -776,17 +837,24 @@ class RiskStore:
 
         token = secrets.token_hex(24)
         now = datetime.now(timezone.utc)
-        ttl = int(os.getenv("SENTINALPAY_SESSION_TTL_SECONDS", "43200") or 43200)
+        if kind == "admin":
+            raw_ttl = os.getenv("SENTINALPAY_ADMIN_SESSION_TTL_SECONDS", "28800")
+        else:
+            raw_ttl = os.getenv("SENTINALPAY_SESSION_TTL_SECONDS", "43200")
+        ttl = int(raw_ttl or 28800)
         expires = (now + timedelta(seconds=max(1, ttl))).isoformat()
         with _LOCK, self._connect() as conn:
             conn.execute(
-                "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
-                (hash_token(token), user_id, now.isoformat(), expires),
+                """
+                INSERT INTO sessions (token, user_id, created_at, expires_at, kind)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (hash_token(token), user_id, now.isoformat(), expires, kind),
             )
             conn.commit()
         return token
 
-    def session_user(self, token: str) -> str | None:
+    def _open_session(self, token: str) -> tuple[str, str] | None:
         from risk.passwords import hash_token
 
         if not token:
@@ -795,19 +863,34 @@ class RiskStore:
         now = datetime.now(timezone.utc)
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT user_id, expires_at FROM sessions WHERE token = ?",
+                "SELECT user_id, expires_at, kind FROM sessions WHERE token = ?",
                 (digest,),
             ).fetchone()
         if row is None:
             return None
-        expires_raw = row["expires_at"] if not isinstance(row, tuple) else row[1]
+        if isinstance(row, tuple):
+            user_id, expires_raw, kind = row[0], row[1], row[2]
+        else:
+            user_id, expires_raw, kind = row["user_id"], row["expires_at"], row["kind"]
         if expires_raw:
             expires = datetime.fromisoformat(str(expires_raw))
             if expires.tzinfo is None:
                 expires = expires.replace(tzinfo=timezone.utc)
             if now > expires:
                 return None
-        return row["user_id"] if not isinstance(row, tuple) else row[0]
+        return str(user_id), str(kind or "user")
+
+    def session_user(self, token: str) -> str | None:
+        found = self._open_session(token)
+        if not found or found[1] == "admin":
+            return None
+        return found[0]
+
+    def session_admin(self, token: str) -> str | None:
+        found = self._open_session(token)
+        if not found or found[1] != "admin":
+            return None
+        return found[0]
 
     def revoke_session(self, token: str) -> bool:
         from risk.passwords import hash_token

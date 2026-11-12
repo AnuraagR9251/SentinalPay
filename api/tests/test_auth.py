@@ -5,6 +5,7 @@ import json
 from fastapi.testclient import TestClient
 
 from api.main import app
+from api.tests.desk_auth import sign_in_desk
 
 
 def test_wrong_password_is_401() -> None:
@@ -108,13 +109,16 @@ def test_order_creation_is_not_anonymous() -> None:
     assert posted.status_code == 401
 
 
-def test_feed_requires_session_when_login_on(monkeypatch) -> None:
+def test_feed_requires_admin_cookie_not_demo_bearer(monkeypatch) -> None:
     monkeypatch.setenv("SENTINALPAY_REQUIRE_LOGIN", "1")
     client = TestClient(app)
     denied = client.get("/transactions")
     assert denied.status_code == 401
     token = client.post("/login", json={"user_id": "aarav@senitenial", "password": "demo123"}).json()["token"]
-    ok = client.get("/transactions", headers={"Authorization": f"Bearer {token}"})
+    denied_bearer = client.get("/transactions", headers={"Authorization": f"Bearer {token}"})
+    assert denied_bearer.status_code == 401
+    sign_in_desk(client)
+    ok = client.get("/transactions")
     assert ok.status_code == 200
 
 
@@ -253,6 +257,9 @@ def test_api_key_required_on_score_evaluate_feed_and_graphql(monkeypatch) -> Non
     ok_headers = {"X-API-Key": "lab-secret"}
     assert client.post("/score", json=score_body, headers=ok_headers).status_code == 200
     assert client.post("/api/v1/transactions/evaluate", json=eval_body, headers=ok_headers).status_code == 200
+    assert client.get("/transactions", headers=ok_headers).status_code == 401
+    sign_in_desk(client)
+    assert client.get("/transactions").status_code == 401
     assert client.get("/transactions", headers=ok_headers).status_code == 200
     gql_denied = client.post(
         "/graphql",

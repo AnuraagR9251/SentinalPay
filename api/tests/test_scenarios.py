@@ -3,6 +3,7 @@
 from fastapi.testclient import TestClient
 
 from api.main import app
+from api.tests.desk_auth import sign_in_desk
 
 
 def _score(client: TestClient, **overrides):
@@ -91,6 +92,7 @@ def test_replay_same_id_is_idempotent() -> None:
     assert second.status_code == 200
     assert first.json()["canonical_risk_score"] == second.json()["canonical_risk_score"]
     assert first.json()["canonical_decision"] == second.json()["canonical_decision"]
+    sign_in_desk(client)
     feed = client.get("/transactions")
     ids = [row["payment"]["id"] for row in feed.json()["items"] if row["payment"]["id"] == "lab-replay-1"]
     assert ids == ["lab-replay-1"]
@@ -107,6 +109,7 @@ def test_score_without_location_does_not_invent_coords() -> None:
         assert 0.0 <= body["P_ae"] <= 1.0
     else:
         assert body["P_ae"] is None
+    sign_in_desk(client)
     feed = client.get("/transactions")
     row = next(item for item in feed.json()["items"] if item["payment"]["id"] == "lab-noloc-1")
     assert row["payment"]["location"]["status"] == "omitted"

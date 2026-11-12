@@ -3,6 +3,7 @@
 from fastapi.testclient import TestClient
 
 from api.main import app
+from api.tests.desk_auth import sign_in_desk
 
 
 def _gql(client: TestClient, query: str, variables: dict | None = None, headers: dict | None = None):
@@ -258,17 +259,20 @@ def test_graphql_unauth_does_not_score(monkeypatch) -> None:
     assert called == []
 
 
-def test_graphql_transactions_require_session(monkeypatch) -> None:
+def test_graphql_transactions_require_admin_cookie(monkeypatch) -> None:
     monkeypatch.setenv("SENTINALPAY_REQUIRE_LOGIN", "1")
     client = TestClient(app)
     denied = _gql(client, "query { transactions { transactionId } }")
     assert denied.json().get("errors")
     token = client.post("/login", json={"user_id": "aarav@senitenial", "password": "demo123"}).json()["token"]
-    ok = _gql(
+    bearer = _gql(
         client,
         "query { transactions { transactionId } }",
         headers={"Authorization": f"Bearer {token}"},
     )
+    assert bearer.json().get("errors")
+    sign_in_desk(client)
+    ok = _gql(client, "query { transactions { transactionId } }")
     assert ok.json()["data"]["transactions"] is not None
 
 

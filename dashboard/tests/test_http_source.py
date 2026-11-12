@@ -288,3 +288,53 @@ def test_app_uses_http_source_only() -> None:
     text = (Path(__file__).resolve().parents[1] / "app.py").read_text(encoding="utf-8")
     assert "HttpTransactionSource" in text
     assert "SimulatedStream" not in text
+    assert "desk_login" in text
+
+
+def test_pull_sends_admin_cookie(monkeypatch) -> None:
+    source = HttpTransactionSource("http://127.0.0.1:8000")
+    source.admin_cookie = "tok123"
+    seen: dict[str, str] = {}
+
+    class _Resp:
+        def read(self) -> bytes:
+            return b'{"source":"GET /transactions","sandbox":true,"count":0,"items":[]}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> bool:
+            return False
+
+    def _ok(req, timeout=3):
+        del timeout
+        seen["cookie"] = req.get_header("Cookie") or ""
+        return _Resp()
+
+    monkeypatch.setattr("dashboard.data_simulator.urlopen", _ok)
+    source.pull()
+    assert seen["cookie"] == "sp_admin=tok123"
+
+
+def test_login_admin_stores_cookie(monkeypatch) -> None:
+    source = HttpTransactionSource("http://127.0.0.1:8000")
+    headers = EmailMessage()
+    headers["Set-Cookie"] = "sp_admin=tok123; HttpOnly; Path=/; SameSite=lax"
+
+    class _Resp:
+        def __init__(self) -> None:
+            self.headers = headers
+
+        def read(self) -> bytes:
+            return b'{"ok":true,"username":"desk"}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> bool:
+            return False
+
+    monkeypatch.setattr("dashboard.data_simulator.urlopen", lambda *a, **k: _Resp())
+    assert source.login_admin("desk", "secret") is None
+    assert source.admin_cookie == "tok123"
+    assert source.admin_username == "desk"

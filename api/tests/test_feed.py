@@ -6,10 +6,12 @@ from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 
 from api.main import _feed_item, app
+from api.tests.desk_auth import sign_in_desk
 
 
 def test_transactions_starts_empty() -> None:
     client = TestClient(app)
+    sign_in_desk(client)
     response = client.get("/transactions")
     assert response.status_code == 200
     body = response.json()
@@ -37,6 +39,7 @@ def test_score_then_feed_roundtrip() -> None:
     body = posted.json()
     assert body["risk_tier"] in {"ALLOW", "STEP_UP", "HOLD", "BLOCK"}
     assert "canonical_decision" in body
+    sign_in_desk(client)
     feed = client.get("/transactions")
     assert feed.status_code == 200
     body = feed.json()

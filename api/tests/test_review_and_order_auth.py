@@ -3,6 +3,7 @@
 from fastapi.testclient import TestClient
 
 from api.main import app
+from api.tests.desk_auth import CSRF, sign_in_desk
 
 
 def _login(client: TestClient) -> str:
@@ -24,53 +25,49 @@ def _eval(client: TestClient, txn_id: str, headers: dict | None = None):
     )
 
 
-def test_reviews_open_when_login_off() -> None:
+def test_reviews_require_admin_cookie() -> None:
     client = TestClient(app)
-    listed = client.get("/api/v1/reviews")
-    assert listed.status_code == 200
-    assert isinstance(listed.json(), list)
+    assert client.get("/api/v1/reviews").status_code == 401
     missing = client.post(
         "/api/v1/reviews/no-such-txn",
         json={"decision": "APPROVED", "reason": "sandbox"},
     )
-    assert missing.status_code == 404
+    assert missing.status_code == 401
+    sign_in_desk(client)
+    listed = client.get("/api/v1/reviews")
+    assert listed.status_code == 200
+    assert isinstance(listed.json(), list)
+    no_csrf = client.post(
+        "/api/v1/reviews/no-such-txn",
+        json={"decision": "APPROVED", "reason": "sandbox"},
+    )
+    assert no_csrf.status_code == 403
+    missing_ok = client.post(
+        "/api/v1/reviews/no-such-txn",
+        headers=CSRF,
+        json={"decision": "APPROVED", "reason": "sandbox"},
+    )
+    assert missing_ok.status_code == 404
 
 
-def test_reviews_require_session_when_login_on(monkeypatch) -> None:
+def test_reviews_ignore_demo_bearer(monkeypatch) -> None:
     monkeypatch.setenv("SENTINALPAY_REQUIRE_LOGIN", "1")
     monkeypatch.setenv("SENTINALPAY_DECIDE_ALLOW_MAX", "0")
     monkeypatch.setenv("SENTINALPAY_DECIDE_REVIEW_MAX", "100")
-    client = TestClient(app)
-    assert client.get("/api/v1/reviews").status_code == 401
-    assert (
-        client.post(
-            "/api/v1/reviews/any",
-            json={"decision": "APPROVED", "reason": "sandbox"},
-        ).status_code
-        == 401
-    )
-    assert (
-        client.get("/api/v1/reviews", headers={"Authorization": "Bearer not-a-session"}).status_code
-        == 401
-    )
-    assert (
-        client.post(
-            "/api/v1/reviews/any",
-            headers={"Authorization": "Bearer not-a-session"},
-            json={"decision": "APPROVED", "reason": "sandbox"},
-        ).status_code
-        == 401
-    )
-    token = _login(client)
-    headers = {"Authorization": f"Bearer {token}"}
-    listed = client.get("/api/v1/reviews", headers=headers)
-    assert listed.status_code == 200
-    evaluated = _eval(client, "rev-auth-1", headers)
+    payer = TestClient(app)
+    token = _login(payer)
+    payer_headers = {"Authorization": f"Bearer {token}"}
+    assert payer.get("/api/v1/reviews", headers=payer_headers).status_code == 401
+    evaluated = _eval(payer, "rev-auth-1", payer_headers)
     assert evaluated.status_code == 200
-    submitted = client.post(
+    desk = TestClient(app)
+    sign_in_desk(desk)
+    listed = desk.get("/api/v1/reviews")
+    assert listed.status_code == 200
+    submitted = desk.post(
         f"/api/v1/reviews/{evaluated.json()['transaction_id']}",
-        headers=headers,
-        json={"decision": "APPROVED", "reason": "sandbox analyst"},
+        headers=CSRF,
+        json={"decision": "APPROVED", "reason": "desk admin"},
     )
     if evaluated.json()["decision"] == "REVIEW":
         assert submitted.status_code == 200
@@ -79,29 +76,23 @@ def test_reviews_require_session_when_login_on(monkeypatch) -> None:
         assert submitted.status_code == 404
 
 
-def test_reviews_any_logged_in_demo_user_can_operate_queue(monkeypatch) -> None:
-    """No admin role: another seeded account can list/submit. Documented demo limit."""
+def test_reviews_demo_user_cannot_operate_queue(monkeypatch) -> None:
     monkeypatch.setenv("SENTINALPAY_REQUIRE_LOGIN", "1")
-    monkeypatch.setenv("SENTINALPAY_DECIDE_ALLOW_MAX", "0")
-    monkeypatch.setenv("SENTINALPAY_DECIDE_REVIEW_MAX", "100")
     client = TestClient(app)
-    aarav = _login(client)
-    evaluated = _eval(client, "rev-any-user-1", {"Authorization": f"Bearer {aarav}"})
-    assert evaluated.status_code == 200
     priya = client.post("/login", json={"user_id": "priya@senitenial", "password": "demo123"}).json()["token"]
     headers = {"Authorization": f"Bearer {priya}"}
-    listed = client.get("/api/v1/reviews", headers=headers)
-    assert listed.status_code == 200
-    if evaluated.json()["decision"] == "REVIEW":
-        submitted = client.post(
-            f"/api/v1/reviews/{evaluated.json()['transaction_id']}",
+    assert client.get("/api/v1/reviews", headers=headers).status_code == 401
+    assert (
+        client.post(
+            "/api/v1/reviews/any",
             headers=headers,
             json={"decision": "APPROVED", "reason": "other demo user"},
-        )
-        assert submitted.status_code == 200
+        ).status_code
+        == 401
+    )
 
 
-def test_reviews_need_key_and_session_when_both_set(monkeypatch) -> None:
+def test_reviews_need_key_and_admin_cookie(monkeypatch) -> None:
     monkeypatch.setenv("SENTINALPAY_REQUIRE_LOGIN", "1")
     monkeypatch.setenv("SENTINALPAY_API_KEY", "lab-secret")
     client = TestClient(app)
@@ -109,7 +100,9 @@ def test_reviews_need_key_and_session_when_both_set(monkeypatch) -> None:
     assert client.get("/api/v1/reviews").status_code == 401
     assert client.get("/api/v1/reviews", headers={"Authorization": f"Bearer {token}"}).status_code == 401
     assert client.get("/api/v1/reviews", headers={"X-API-Key": "lab-secret"}).status_code == 401
+    sign_in_desk(client)
     both = {"Authorization": f"Bearer {token}", "X-API-Key": "lab-secret"}
+    assert client.get("/api/v1/reviews", headers={"Authorization": f"Bearer {token}"}).status_code == 401
     assert client.get("/api/v1/reviews", headers=both).status_code == 200
 
 

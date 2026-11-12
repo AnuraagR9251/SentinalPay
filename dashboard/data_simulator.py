@@ -528,11 +528,29 @@ def rows_from_feed(payload: Any) -> list[tuple[Transaction, RiskAssessment]]:
     return pairs
 
 
+def _cookie_from_headers(headers: Any, name: str) -> str | None:
+    values: list[str] = []
+    getter = getattr(headers, "get_all", None)
+    if getter:
+        values = [str(item) for item in (getter("Set-Cookie") or [])]
+    if not values and hasattr(headers, "get"):
+        single = headers.get("Set-Cookie")
+        if single:
+            values = [str(single)]
+    prefix = f"{name}="
+    for raw in values:
+        pair = raw.split(";", 1)[0].strip()
+        if pair.startswith(prefix):
+            return pair[len(prefix) :]
+    return None
+
+
 class HttpTransactionSource:
     """Live feed: GET {base_url}/transactions (payments the app already scored).
 
     Never falls back to SimulatedStream. Empty 200s clear the window.
     Transport failures keep the last successful buffer.
+    The desk session cookie stays on this object (server side), not in the browser.
     """
 
     def __init__(self, base_url: str | None = None) -> None:
@@ -542,6 +560,97 @@ class HttpTransactionSource:
         self.last_error: str | None = None
         self.last_ok_at: datetime | None = None
         self._cooldown_until: float = 0.0
+        self.admin_cookie: str | None = None
+        self.admin_username: str | None = None
+        self.admin_unreachable = False
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Accept": "application/json"}
+        if self.admin_cookie:
+            headers["Cookie"] = f"sp_admin={self.admin_cookie}"
+        return headers
+
+    def login_admin(self, username: str, password: str) -> str | None:
+        """Sign in. Returns an error message, or None when the cookie was stored."""
+        body = json.dumps({"username": username, "password": password}).encode("utf-8")
+        req = Request(
+            f"{self.base_url}/admin/login",
+            data=body,
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(req, timeout=5) as resp:
+                cookie = _cookie_from_headers(resp.headers, "sp_admin")
+                payload = json.loads(resp.read().decode("utf-8"))
+        except HTTPError as exc:
+            self.admin_cookie = None
+            self.admin_username = None
+            if int(exc.code) == 401:
+                return "Invalid credentials"
+            if int(exc.code) == 429:
+                return "Too many attempts. Wait a few minutes."
+            return "Sign-in failed"
+        except (URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError):
+            return "Scoring API is not reachable"
+        if not cookie:
+            self.admin_cookie = None
+            return "Sign-in failed"
+        self.admin_cookie = cookie
+        name = payload.get("username") if isinstance(payload, dict) else None
+        self.admin_username = str(name) if name else username.strip()
+        return None
+
+    def refresh_admin(self) -> str:
+        """ok, anonymous, or unreachable. A 401 clears the cookie."""
+        self.admin_unreachable = False
+        if not self.admin_cookie:
+            return "anonymous"
+        req = Request(
+            f"{self.base_url}/admin/session",
+            headers=self._headers(),
+            method="GET",
+        )
+        try:
+            with urlopen(req, timeout=3) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except HTTPError as exc:
+            if int(exc.code) == 401:
+                self.admin_cookie = None
+                self.admin_username = None
+                return "anonymous"
+            self.admin_unreachable = True
+            return "unreachable"
+        except (URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError):
+            self.admin_unreachable = True
+            return "unreachable"
+        name = payload.get("username") if isinstance(payload, dict) else None
+        if not name:
+            self.admin_cookie = None
+            self.admin_username = None
+            return "anonymous"
+        self.admin_username = str(name)
+        return "ok"
+
+    def logout_admin(self) -> None:
+        if self.admin_cookie:
+            req = Request(
+                f"{self.base_url}/admin/logout",
+                data=b"{}",
+                headers={
+                    **self._headers(),
+                    "Content-Type": "application/json",
+                    "X-SentinalPay-Admin": "1",
+                },
+                method="POST",
+            )
+            try:
+                with urlopen(req, timeout=3):
+                    pass
+            except (HTTPError, URLError, TimeoutError, OSError):
+                pass
+        self.admin_cookie = None
+        self.admin_username = None
 
     def _note_rate_limited(self, retry_after: str | None) -> list[tuple[Transaction, RiskAssessment]]:
         wait = 8.0
@@ -556,14 +665,18 @@ class HttpTransactionSource:
             return list(self._buffer)
         req = Request(
             f"{self.base_url}/transactions?limit=50",
-            headers={"Accept": "application/json"},
+            headers=self._headers(),
             method="GET",
         )
         try:
             with urlopen(req, timeout=3) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
         except HTTPError as exc:
-            if int(getattr(exc, "code", 0) or 0) == 429:
+            code = int(getattr(exc, "code", 0) or 0)
+            if code == 401:
+                self.last_error = "Unauthorized"
+                return list(self._buffer)
+            if code == 429:
                 retry = None
                 headers = getattr(exc, "headers", None)
                 if headers is not None:
