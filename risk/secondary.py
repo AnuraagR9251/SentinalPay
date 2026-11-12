@@ -23,7 +23,7 @@ FAILURE_REJECT_COUNT = 3
 LOCATION_APPROVE_KM = 50
 SPEED_REJECT_KMH = 800
 APPROVAL_TTL_S = 15 * 60
-OUTCOMES = ("APPROVE", "REJECT", "CONTINUE_HOLD")
+OUTCOMES = ("APPROVE", "REJECT", "CONTINUE_HOLD", "STEP_UP")
 
 
 def _dt(value: Any) -> datetime | None:
@@ -196,11 +196,23 @@ def assess_secondary(evidence: Mapping[str, Any]) -> dict[str, Any]:
     if not observed_failure:
         gaps.append("failures_unavailable")
 
+    if evidence.get("graph_state") == "strong":
+        rejects.append("graph_network")
+    ae_strong = evidence.get("ae_state") == "strong"
     if rejects:
         return {"outcome": "REJECT", "reasons": rejects}
     if gaps:
+        if ae_strong:
+            gaps.append("ae_anomaly")
         return {"outcome": "CONTINUE_HOLD", "reasons": gaps}
-    return {"outcome": "APPROVE", "reasons": ["history_consistent"]}
+    if ae_strong:
+        return {"outcome": "STEP_UP", "reasons": ["ae_anomaly"]}
+    reasons = ["history_consistent"]
+    if evidence.get("ae_state") == "normal":
+        reasons.append("ae_normal")
+    if evidence.get("graph_state") == "normal":
+        reasons.append("graph_normal")
+    return {"outcome": "APPROVE", "reasons": reasons}
 
 
 def _rule_names(result: Mapping[str, Any]) -> list[str] | None:
@@ -232,6 +244,13 @@ def _recent_failures(result: Mapping[str, Any]) -> int | None:
     return value
 
 
+def _signal_state(experimental: Mapping[str, Any] | None, kind: str) -> str:
+    from risk.fusion import fuse_decision
+
+    fused = fuse_decision("ALLOW", experimental if isinstance(experimental, Mapping) else {})
+    return str(fused.get(kind) or "unavailable")
+
+
 def collect_evidence(store: Any, result: Mapping[str, Any], fields: Mapping[str, Any]) -> dict[str, Any]:
     transaction_id = str(result.get("transaction_id") or fields.get("transaction_id") or "")
     user_id = str(fields.get("user_id") or "")
@@ -252,6 +271,8 @@ def collect_evidence(store: Any, result: Mapping[str, Any], fields: Mapping[str,
         "model_available": _model_available(result),
         "recent_failures": _recent_failures(result),
         "failed_payments": store.failed_checkout_count(user_id, exclude_transaction_id=transaction_id),
+        "ae_state": _signal_state(result.get("experimental"), "ae_state"),
+        "graph_state": _signal_state(result.get("experimental"), "graph_state"),
     }
 
 

@@ -1,4 +1,4 @@
-"""AE/graph are reported experimentally and do not drive ALLOW/REVIEW/BLOCK."""
+"""AE and graph are computed beside the primary score, then fused without changing R."""
 
 from __future__ import annotations
 
@@ -181,7 +181,7 @@ def test_duplicate_id_does_not_double_count(tmp_path: Path) -> None:
     assert ids.count("dup-exp") == 1
 
 
-def test_high_experimental_scores_do_not_change_decision(tmp_path: Path, monkeypatch) -> None:
+def test_strong_autoencoder_escalates_without_changing_primary_score(tmp_path: Path, monkeypatch) -> None:
     payload = _payload(transaction_id="blend-a", user_id="USR_BLEND")
     first = evaluate_transaction(payload, store=RiskStore(tmp_path / "a.db"), config=RiskConfig())
     monkeypatch.setattr(
@@ -194,7 +194,16 @@ def test_high_experimental_scores_do_not_change_decision(tmp_path: Path, monkeyp
         store=RiskStore(tmp_path / "b.db"),
         config=RiskConfig(),
     )
-    assert first["decision"] == second["decision"]
     assert first["risk_score"] == second["risk_score"]
-    assert second["experimental"]["P_graph"] == 1.0
+    assert set(second["components"]) == {"rules", "behavior", "ml", "security"}
     assert second["experimental"]["P_ae"] == 1.0
+    primary = second["fusion"]["primary_decision"]
+    if primary == "BLOCK":
+        assert second["decision"] == "BLOCK"
+        assert second["fusion"]["reasons"] == ["primary_block_kept"]
+    elif primary == "ALLOW":
+        assert second["decision"] == "ALLOW"
+        assert second["action"] == "ALLOW"
+        assert "routine_amount_kept" in second["fusion"]["reasons"]
+    else:
+        assert second["decision"] == "REVIEW"

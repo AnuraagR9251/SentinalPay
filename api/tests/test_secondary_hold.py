@@ -200,6 +200,89 @@ def test_client_cannot_submit_its_own_secondary_outcome(monkeypatch) -> None:
     assert get_store().get_checkout_order("order_forged") is None
 
 
+def test_graph_flag_on_hold_rejects_before_razorpay(monkeypatch) -> None:
+    fake = _hold_eval(
+        monkeypatch,
+        experimental={
+            "ae_available": True,
+            "P_ae": 0.1,
+            "graph_available": True,
+            "structuring_flag": True,
+            "mule_cluster": False,
+            "P_graph": 0.4,
+        },
+    )
+    _seed_familiar()
+    client = TestClient(app)
+    posted = client.post("/api/create-order", json=_hold_body(transaction_id="tx-graph"))
+    assert posted.status_code == 403
+    assert posted.json()["detail"]["secondary_outcome"] == "REJECT"
+    assert fake.creates == 0
+    assert get_store().get_checkout_by_transaction("tx-graph") is None
+
+
+def test_autoencoder_flag_on_hold_requires_step_up_before_order(monkeypatch) -> None:
+    fake = _hold_eval(
+        monkeypatch,
+        experimental={
+            "ae_available": True,
+            "P_ae": 1.0,
+            "graph_available": True,
+            "structuring_flag": False,
+            "mule_cluster": False,
+            "P_graph": 0.02,
+        },
+    )
+    _seed_familiar()
+    client = TestClient(app)
+    denied = client.post("/api/create-order", json=_hold_body(transaction_id="tx-ae-step"))
+    assert denied.status_code == 403
+    detail = denied.json()["detail"]
+    assert detail["action"] == "STEP_UP"
+    assert detail["secondary_outcome"] == "STEP_UP"
+    assert detail["challenge_id"]
+    assert fake.creates == 0
+    now = datetime.now(timezone.utc).isoformat()
+    store = get_store()
+    with store._connect() as conn:
+        conn.execute(
+            """
+            UPDATE challenges
+            SET consumed_at = ?
+            WHERE challenge_id = ?
+            """,
+            (now, detail["challenge_id"]),
+        )
+        conn.commit()
+    allowed = client.post("/api/create-order", json=_hold_body(transaction_id="tx-ae-step"))
+    assert allowed.status_code == 200
+    assert allowed.json()["secondary_outcome"] == "STEP_UP"
+    assert allowed.json()["settled"] is False
+    assert fake.creates == 1
+
+
+def test_client_cannot_override_fusion_with_a_body_field(monkeypatch) -> None:
+    fake = _hold_eval(
+        monkeypatch,
+        experimental={
+            "ae_available": True,
+            "P_ae": 0.1,
+            "graph_available": True,
+            "structuring_flag": True,
+            "mule_cluster": False,
+        },
+    )
+    _seed_familiar()
+    client = TestClient(app)
+    posted = client.post(
+        "/api/create-order",
+        json=_hold_body(transaction_id="tx-fuse-bypass", decision="ALLOW", secondary_outcome="APPROVE"),
+    )
+    assert posted.status_code == 403
+    assert posted.json()["detail"]["secondary_outcome"] == "REJECT"
+    assert fake.creates == 0
+
+
 def test_expired_approval_is_not_renewed(monkeypatch) -> None:
     fake = _hold_eval(monkeypatch)
     _seed_familiar()

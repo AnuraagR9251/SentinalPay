@@ -218,8 +218,9 @@ def graph_signals(graph: nx.MultiDiGraph, account_id: str, as_of: datetime | Non
 def score_graph(graph: nx.MultiDiGraph, account_id: str, as_of: datetime | None = None) -> float:
     """Combine graph signals into a 0–1 heuristic. Does not mutate `graph`.
 
-    Demo weights, not a calibrated detector: structuring 0.40, mule 0.35,
-    fan-out 0.15, fan-in 0.10. Not blended into ALLOW/REVIEW/BLOCK.
+    Demo weights, not a trained or calibrated model: structuring 0.40, mule 0.35,
+    fan-out 0.15, fan-in 0.10. Fusion reads the structuring and mule flags.
+    Fan-in and fan-out do not escalate on their own. The score is not a term in R.
     """
     signals = graph_signals(graph, account_id, as_of=as_of)
     fan_out = min(1.0, float(signals["fan_out_count"]) / 8.0)

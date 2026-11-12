@@ -440,14 +440,14 @@ def _ae_health() -> dict[str, Any]:
         return {
             "ae_loaded": False,
             "ae_error": "status_error",
-            "ae_note": "experimental; not blended into canonical ALLOW/REVIEW/BLOCK",
+            "ae_note": "fused after the primary score; not a term in R",
         }
 
 
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     ae = _ae_health()
-    graph_note = "windowed store heuristic (24h, cap 2000); not blended into ALLOW/REVIEW/BLOCK"
+    graph_note = "windowed store heuristic (24h, cap 2000); fused after the primary score, not a term in R"
     try:
         status = model_status()
     except Exception:
@@ -722,9 +722,9 @@ def _checkout_fields(payload: CheckoutOrderRequest, user_id: str, merchant: str)
 def _public_secondary(resolved: dict[str, Any]) -> str:
     """Expired approval does not stay payable and does not become a new approval."""
     outcome = str(resolved.get("outcome") or "CONTINUE_HOLD")
-    if outcome not in {"APPROVE", "REJECT", "CONTINUE_HOLD"}:
+    if outcome not in {"APPROVE", "REJECT", "CONTINUE_HOLD", "STEP_UP"}:
         return "CONTINUE_HOLD"
-    if resolved.get("expired") and outcome == "APPROVE":
+    if resolved.get("expired") and outcome in {"APPROVE", "STEP_UP"}:
         return "CONTINUE_HOLD"
     return outcome
 
@@ -774,7 +774,8 @@ def _replay_checkout(store: Any, row: dict[str, Any], fields: dict[str, Any]) ->
         return _checkout_body(row, result)
     if not same_binding(secondary, fields):
         raise HTTPException(status_code=409, detail="transaction details changed")
-    if _public_secondary(secondary) != "APPROVE":
+    public = _public_secondary(secondary)
+    if public not in {"APPROVE", "STEP_UP"}:
         if not result:
             result = {
                 "decision": secondary.get("primary_decision"),
@@ -788,7 +789,7 @@ def _replay_checkout(store: Any, row: dict[str, Any], fields: dict[str, Any]) ->
             "decision": secondary.get("primary_decision"),
             "risk_score": secondary.get("primary_score"),
         }
-    return _checkout_body(row, result, "APPROVE")
+    return _checkout_body(row, result, public)
 
 
 @app.post("/api/create-order")
@@ -847,10 +848,28 @@ def create_checkout_order(payload: CheckoutOrderRequest, request: Request) -> di
         if resolved.get("conflict"):
             store.release_checkout_order(transaction_id)
             raise HTTPException(status_code=409, detail="transaction details changed")
-        if _public_secondary(resolved) != "APPROVE":
+        public = _public_secondary(resolved)
+        if public == "STEP_UP":
+            if not store.challenge_cleared(transaction_id, user_id):
+                challenge = store.create_challenge(user_id, transaction_id, bearer_token(request))
+                store.release_checkout_order(transaction_id)
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "action": "STEP_UP",
+                        "decision": result.get("decision"),
+                        "risk_score": result.get("risk_score"),
+                        "challenge_id": challenge.get("challenge_id"),
+                        "transaction_id": transaction_id,
+                        "secondary_outcome": "STEP_UP",
+                    },
+                )
+            secondary_outcome = "STEP_UP"
+        elif public != "APPROVE":
             store.release_checkout_order(transaction_id)
             _deny_hold(result, resolved, transaction_id)
-        secondary_outcome = "APPROVE"
+        else:
+            secondary_outcome = "APPROVE"
     elif not _checkout_allowed(store, result, user_id):
         store.release_checkout_order(transaction_id)
         raise HTTPException(

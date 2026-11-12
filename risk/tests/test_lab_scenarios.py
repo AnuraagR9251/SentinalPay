@@ -134,7 +134,7 @@ def test_below_threshold_sets_experimental_structuring_not_a_canonical_rule(tmp_
     assert "HIGH_VELOCITY" not in _names(live)
     assert live["experimental"]["structuring_flag"] is True
     assert "structuring" not in {name.lower() for name in _names(live)}
-    assert "not blended" in live["experimental"]["note"]
+    assert "not a term in R" in live["experimental"]["note"]
 
 
 def test_new_payee_above_baseline(tmp_path: Path) -> None:

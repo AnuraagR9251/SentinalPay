@@ -37,7 +37,7 @@ class AeResult:
     error: str | None
     threshold: float | None = None
     n_features: int | None = None
-    note: str = "experimental reconstruction error; not in ALLOW/REVIEW/BLOCK blend"
+    note: str = "reconstruction error over the saved p95; fused after the primary score, not a term in R"
 
 
 def reset_autoencoder() -> None:
@@ -124,7 +124,7 @@ def ae_status() -> dict[str, Any]:
         "ae_loaded": loaded,
         "ae_error": None if loaded else (_LOAD_ERROR or "unavailable"),
         "ae_threshold": _THRESHOLD if loaded else None,
-        "ae_note": "experimental; not blended into canonical ALLOW/REVIEW/BLOCK",
+        "ae_note": "fused after the primary score; not a term in R",
     }
 
 

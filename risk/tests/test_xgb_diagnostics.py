@@ -114,7 +114,7 @@ def test_ordinary_and_suspicious_demo_rows_both_score(tmp_path: Path) -> None:
         assert 0.0 <= p <= 1.0
         assert row["ml"]["calibrated_for_upi"] is False
     assert grocery["experimental"]["note"]
-    assert "not blended" in grocery["experimental"]["note"]
+    assert "not a term in R" in grocery["experimental"]["note"]
 
 
 def test_missing_model_is_not_a_confident_fraud_score(tmp_path: Path, monkeypatch) -> None:
@@ -218,7 +218,7 @@ def test_autoencoder_does_not_enter_canonical_components(tmp_path: Path) -> None
     assert "ae" not in result["components"]
     assert "P_ae" not in result["components"]
     note = result["experimental"]["note"]
-    assert "not blended" in note
+    assert "not a term in R" in note
 
 
 def test_demo_batch_saturation_is_flagged_uncalibrated_not_silently_trusted() -> None:

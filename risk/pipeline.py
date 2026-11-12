@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import time
+from dataclasses import replace
 from typing import Any, Mapping, Sequence
 
 from detection.autoencoder_scorer import infer_autoencoder
@@ -24,6 +25,7 @@ from risk.behavior import analyze_behavior
 from risk.config import RiskConfig
 from risk.contracts import NormalizedTransaction
 from risk.envelope import attach_public_envelope
+from risk.fusion import fuse_decision
 from risk.ml_layer import infer_fraud
 from risk.normalize import NormalizationError, normalize_transaction
 from risk.rules import run_rules
@@ -108,7 +110,7 @@ def _location_baseline(txn: NormalizedTransaction, home: tuple[float, float] | N
     return "KNOWN_UNUSUAL_LOCATION"
 
 
-_EXPERIMENTAL_NOTE = "experimental; not blended into canonical ALLOW/REVIEW/BLOCK"
+_EXPERIMENTAL_NOTE = "experimental signals fused after the primary score; not a term in R"
 
 
 def _ae_inputs(
@@ -344,6 +346,11 @@ def evaluate_transaction(
     if blended.decision == "REVIEW" and decision.decision == "ALLOW":
         overrides.append("ROUTINE_SMALL_ALLOW")
     experimental = _experimental_signals(txn, history, home, db)
+    primary_decision = decision.decision
+    fusion = fuse_decision(primary_decision, experimental, amount=txn.amount)
+    if fusion["decision"] != primary_decision:
+        decision = replace(decision, decision=fusion["decision"])
+        overrides.append("FUSION_" + fusion["decision"])
     elapsed_ms = (time.perf_counter() - started) * 1000.0
     result = _result_payload(
         txn_id=txn.transaction_id,
@@ -359,6 +366,7 @@ def evaluate_transaction(
         experimental=experimental,
         policy_overrides=overrides,
     )
+    result["fusion"] = fusion
     result["action"] = policy_action(result, amount=txn.amount)
     try:
         wrote = db.persist(txn, security, rules, behavior, ml, decision, cfg.engine_version, elapsed_ms, result=result)
