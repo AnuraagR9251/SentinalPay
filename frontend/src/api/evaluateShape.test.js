@@ -13,7 +13,7 @@ test('evaluate shape keeps experimental signals off the canonical decision', () 
     locationBaseline: 'KNOWN_NORMAL_LOCATION',
     modelAvailable: true,
     reasonCodes: ['ML_UNCALIBRATED_PAYSIM'],
-    policyVersion: 'sentinelpay_v1',
+    policyVersion: 'Sentinalpay_v1',
     payload: {
       idempotent: false,
       rules: { triggered_rules: [{ rule: 'NEW_MERCHANT', reason: 'merchant is unusual for this user' }] },

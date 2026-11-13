@@ -5,6 +5,7 @@ import { scoreApiRoot } from '../../api/session';
 import { openRazorpayCheckout, rupeesToPaise } from '../../api/razorpayCheckout';
 import { holdView, mayMutateBalance } from '../../api/holdAssessment';
 import { SECONDARY_COPY } from '../../api/scoreDisplay';
+import { UPI_MAX_RUPEES, withinUpiLimit } from '../../api/paymentAttempt';
 import { sound } from '../../utils/audio';
 
 export const PaymentModal = () => {
@@ -60,6 +61,10 @@ export const PaymentModal = () => {
       return;
     }
     const num = parseFloat(payAmount);
+    if (!withinUpiLimit(num)) {
+      setRazorpayError(`Maximum amount is ₹${UPI_MAX_RUPEES.toLocaleString('en-IN')}`);
+      return;
+    }
     const transactionId = `tx-${Date.now()}`;
     setPaymentModal((prev) => ({ ...prev, isOpen: false }));
     setRiskGateModal({
@@ -144,7 +149,7 @@ export const PaymentModal = () => {
           canonicalDecision: (detail && detail.decision) || 'BLOCK',
           canonicalRiskScore: detail && detail.risk_score,
           riskTier: 'BLOCK',
-          message: 'Sentinel blocked this payment. Razorpay was not opened.'
+          message: 'Sentinal blocked this payment. Razorpay was not opened.'
         });
         return;
       }
@@ -227,7 +232,7 @@ export const PaymentModal = () => {
   const handleProceedToPin = (e) => {
     e.preventDefault();
     const num = parseFloat(payAmount);
-    if (isNaN(num) || num <= 0) return;
+    if (!withinUpiLimit(num)) return;
 
     sound.playTap();
 
@@ -300,11 +305,18 @@ export const PaymentModal = () => {
                 required
                 autoFocus
                 placeholder="0"
+                max={UPI_MAX_RUPEES}
                 value={payAmount}
-                onChange={(e) => setAmount(e.target.value)}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  const whole = raw.split('.')[0].replace(/\D/g, '');
+                  if (whole.length > 5) return;
+                  setAmount(raw);
+                }}
                 className="w-44 text-3xl sm:text-4xl font-extrabold text-white bg-transparent text-center focus:outline-none placeholder-slate-600 font-heading"
               />
             </div>
+            <p className="text-[10px] text-slate-500 mt-2">Maximum ₹{UPI_MAX_RUPEES.toLocaleString('en-IN')}</p>
 
             {/* Quick Amount Chips */}
             <div className="flex justify-center gap-1.5 mt-3 flex-wrap">
@@ -404,7 +416,7 @@ export const PaymentModal = () => {
           {/* Submit Button */}
           <button
             type="button"
-            disabled={!payAmount || parseFloat(payAmount) <= 0}
+            disabled={!withinUpiLimit(parseFloat(payAmount))}
             onClick={payWithRazorpay}
             className="w-full py-3 rounded-2xl bg-slate-800 border border-slate-600 text-white font-bold text-sm cursor-pointer disabled:opacity-50"
           >
@@ -416,7 +428,7 @@ export const PaymentModal = () => {
           {razorpayError && <p className="text-xs text-center text-rose-400">{razorpayError}</p>}
           <button
             type="submit"
-            disabled={!payAmount || parseFloat(payAmount) <= 0}
+            disabled={!withinUpiLimit(parseFloat(payAmount))}
             className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-emerald-600 hover:from-blue-500 hover:to-emerald-500 disabled:opacity-50 text-white font-bold text-sm shadow-xl shadow-blue-600/30 transition-all flex items-center justify-center gap-2 cursor-pointer"
           >
             <span>Proceed to Pay {user.currency}{payAmount || '0'}</span>

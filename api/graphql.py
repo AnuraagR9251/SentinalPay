@@ -13,7 +13,7 @@ from strawberry.fastapi import GraphQLRouter
 from strawberry.scalars import JSON
 from strawberry.types import Info
 
-from api.compat import legacy_fields_from_canonical, pipeline_payload_from_score
+from api.compat import PAYMENT_MAX_RUPEES, legacy_fields_from_canonical, pipeline_payload_from_score
 from detection.privacy import mask_identifier
 from risk.auth import (
     assert_login_not_locked,
@@ -358,6 +358,8 @@ class Mutation:
     @strawberry.mutation
     def score_transaction(self, info: Info, input: ScoreInput) -> ScorePayload:
         client_key = _enforce_txn_user(info, input.user_id)
+        if float(input.amount) > PAYMENT_MAX_RUPEES:
+            _raise_status(400, "payment limit is ₹99999")
         raw = {
             "transaction_id": input.transaction_id,
             "amount": input.amount,

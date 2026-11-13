@@ -40,7 +40,7 @@ class RiskConfig:
     rate_limit_per_min: int = 40
     replay_seconds: float = 15.0
     high_risk_categories: frozenset[str] = frozenset(("gambling", "crypto", "jewelry"))
-    engine_version: str = "sentinelpay_v1"
+    engine_version: str = "Sentinalpay_v1"
 
     @classmethod
     def load(cls) -> RiskConfig:

@@ -82,7 +82,7 @@ export const ReceiptModal = () => {
           {/* Verification stamp */}
           <div className="pt-3 text-center">
             <p className="text-[9px] text-slate-400">
-              Verified by NPCI Unified Payments Interface & Sentinel AI Guard.
+              Verified by NPCI Unified Payments Interface & Sentinal AI Guard.
             </p>
           </div>
         </div>

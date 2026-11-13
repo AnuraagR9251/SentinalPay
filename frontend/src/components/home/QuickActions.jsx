@@ -142,7 +142,7 @@ export const QuickActions = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
           <div className="w-full max-w-sm rounded-3xl bg-slate-900 border border-slate-700/80 p-6 shadow-2xl">
             <h3 className="text-lg font-bold text-white mb-1 font-heading">{inputModal.title}</h3>
-            <p className="text-xs text-slate-400 mb-4">Instant zero-fee transfer backed by Sentinel 256-bit encryption.</p>
+            <p className="text-xs text-slate-400 mb-4">Instant zero-fee transfer backed by Sentinal 256-bit encryption.</p>
 
             <form onSubmit={handleCustomSend} className="space-y-3">
               <div>

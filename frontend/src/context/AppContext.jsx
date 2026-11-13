@@ -314,7 +314,7 @@ export const AppProvider = ({ children }) => {
         description: `Generated locally on sandbox debit to ${recipient.name || "merchant"}`,
         isScratched: false,
         expiryDate: "Valid for 7 days",
-        code: `SENTINEL-WIN-${Math.floor(1000 + Math.random() * 9000)}`
+        code: `Sentinal-WIN-${Math.floor(1000 + Math.random() * 9000)}`
       };
       setRewards(prev => [awardedReward, ...prev]);
     }

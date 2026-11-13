@@ -12,10 +12,10 @@ const fields = {
   longitude: 77.5946,
 };
 
-test('UPI payments stop at 100000', () => {
-  assert.equal(UPI_MAX_RUPEES, 100000);
-  assert.equal(withinUpiLimit(100000), true);
-  assert.equal(withinUpiLimit(100000.01), false);
+test('UPI payments stop at 5 digits', () => {
+  assert.equal(UPI_MAX_RUPEES, 99999);
+  assert.equal(withinUpiLimit(99999), true);
+  assert.equal(withinUpiLimit(100000), false);
   assert.equal(withinUpiLimit(0), false);
 });
 

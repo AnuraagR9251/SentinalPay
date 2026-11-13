@@ -64,7 +64,7 @@ export const RiskGateModal = () => {
           <div className="relative my-6 inline-flex items-center justify-center">
             <LoaderCircle className="w-16 h-16 text-blue-400 animate-spin" />
           </div>
-          <p className="text-xs uppercase tracking-wider font-bold text-blue-400">Sentinel scan</p>
+          <p className="text-xs uppercase tracking-wider font-bold text-blue-400">Sentinal scan</p>
           <h2 className="text-xl font-black text-white font-heading mt-1">Checking this payment</h2>
           <p className="text-sm text-slate-400 mt-2">
             Scoring {user.currency}{Number(amount || 0).toLocaleString('en-IN')} to {payeeName || 'payee'}
@@ -189,7 +189,7 @@ export const RiskGateModal = () => {
           <p className="text-xs uppercase tracking-wider font-bold text-rose-400">Blocked for your security</p>
           <h2 className="text-2xl font-black text-white font-heading mt-1">Payment not sent</h2>
           <p className="text-sm text-slate-300 mt-2">
-            {message || `Sentinel blocked this transfer to ${payeeName || 'payee'}. The transaction was not completed.`}
+            {message || `Sentinal blocked this transfer to ${payeeName || 'payee'}. The transaction was not completed.`}
           </p>
           <p className="text-[11px] text-slate-500 mt-3 font-mono">
             {formatDecisionLine({
@@ -236,7 +236,7 @@ export const RiskGateModal = () => {
       <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">
         <div className="w-full max-w-sm rounded-[36px] bg-slate-900 border border-slate-700 p-6 text-center shadow-2xl">
           <ShieldAlert className="w-10 h-10 text-slate-300 mx-auto mb-3" />
-          <h2 className="text-lg font-bold text-white font-heading">Could not reach Sentinel</h2>
+          <h2 className="text-lg font-bold text-white font-heading">Could not reach Sentinal</h2>
           <p className="text-sm text-slate-400 mt-2">{message || 'Payment was not sent. Start the scoring API and try again.'}</p>
           <button
             onClick={close}

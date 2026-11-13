@@ -156,7 +156,7 @@ export const UpiPinModal = () => {
         {isProcessing && (
           <div className="text-xs text-blue-400 font-semibold animate-pulse mb-4 flex items-center justify-center gap-2">
             <span className="w-2 h-2 rounded-full bg-blue-400 animate-ping" />
-            <span>Verifying Sentinel Encryption...</span>
+            <span>Verifying Sentinal Encryption...</span>
           </div>
         )}
 

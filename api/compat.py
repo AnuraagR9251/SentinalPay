@@ -16,6 +16,9 @@ from typing import Any, Mapping
 
 from risk.policy import policy_action
 
+# Wallet and checkout amounts. Lab evaluate stays uncapped.
+PAYMENT_MAX_RUPEES = 99999
+
 # Compatibility only. REVIEW is a human queue, not an OTP step-up.
 _CANONICAL_TO_LEGACY = {
     "ALLOW": "ALLOW",

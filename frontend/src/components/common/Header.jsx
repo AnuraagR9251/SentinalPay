@@ -34,7 +34,7 @@ export const Header = ({ searchQuery, setSearchQuery }) => {
           <div>
             <div className="flex items-center gap-1.5">
               <span className="text-lg font-bold tracking-tight bg-gradient-to-r from-blue-400 via-indigo-300 to-emerald-400 bg-clip-text text-transparent font-heading">
-                Senitenial Pay
+                SentinalPay
               </span>
               <span className="text-[10px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">
                 SANDBOX

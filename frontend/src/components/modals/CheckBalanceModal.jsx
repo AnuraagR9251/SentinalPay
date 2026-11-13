@@ -67,7 +67,7 @@ export const CheckBalanceModal = () => {
             </div>
 
             <p className="text-xs text-slate-400 mb-4">
-              Secure bank query encrypted via Sentinel Core
+              Secure bank query encrypted via Sentinal Core
             </p>
 
             {/* PIN Dots */}

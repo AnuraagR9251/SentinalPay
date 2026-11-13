@@ -29,7 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
-from api.compat import legacy_fields_from_canonical, pipeline_payload_from_score
+from api.compat import PAYMENT_MAX_RUPEES, legacy_fields_from_canonical, pipeline_payload_from_score
 from api.httpbody import read_body_capped, webhook_max_bytes
 from api.graphql import graphql_router
 from api.v1 import router as v1_router
@@ -555,6 +555,8 @@ def score(payload: ScoreRequest, request: Request) -> ScoreResponse:
         session_user = require_session(request)
         if session_user != payload.user_id:
             raise HTTPException(status_code=403, detail="user mismatch")
+    if float(payload.amount) > PAYMENT_MAX_RUPEES:
+        raise HTTPException(status_code=400, detail="payment limit is ₹99999")
     try:
         result = evaluate_transaction(
             pipeline_payload_from_score(payload.model_dump()),
@@ -637,6 +639,8 @@ def razorpay_order(payload: RazorpayOrderRequest, request: Request) -> dict[str,
     store = get_store()
     token = bearer_token(request)
     session_user = store.session_user(token) if token else None
+    if float(payload.amount) > PAYMENT_MAX_RUPEES:
+        raise HTTPException(status_code=400, detail="payment limit is ₹99999")
     if not _scored_order_authorized(store, payload, session_user):
         raise HTTPException(status_code=403, detail="payment not authorized")
     adapter = get_razorpay_adapter()
@@ -867,6 +871,8 @@ def create_checkout_order(payload: CheckoutOrderRequest, request: Request) -> di
     """
     if payload.amount < 100:
         raise HTTPException(status_code=400, detail="minimum amount is 100 paise")
+    if payload.amount > PAYMENT_MAX_RUPEES * 100:
+        raise HTTPException(status_code=400, detail="payment limit is ₹99999")
     session_user = _require_checkout_auth(request)
     transaction_id = payload.transaction_id or ""
     user_id = payload.user_id or ""

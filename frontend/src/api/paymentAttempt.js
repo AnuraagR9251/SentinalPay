@@ -1,6 +1,6 @@
 // Wallet payments use tx- ids. Lab and isolated scenarios use their own ids and do not call this.
 
-export const UPI_MAX_RUPEES = 100000;
+export const UPI_MAX_RUPEES = 99999;
 
 export function withinUpiLimit(amount) {
   const rupees = Number(amount);

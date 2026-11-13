@@ -97,7 +97,7 @@ export const INITIAL_CONTACTS = [
 export const INITIAL_MERCHANTS = [
   { id: "m1", name: "Zomato", category: "Food Delivery", upiId: "zomato@icici", cashbackOffer: "Flat ₹50 cashback", icon: "Utensils", bg: "text-red-400 bg-red-500/10 border-red-500/20" },
   { id: "m2", name: "Swiggy", category: "Food & Instamart", upiId: "swiggy@hdfcbank", cashbackOffer: "Up to ₹100 scratch card", icon: "ShoppingBag", bg: "text-orange-400 bg-orange-500/10 border-orange-500/20" },
-  { id: "m3", name: "Amazon India", category: "Online Shopping", upiId: "amazonpay@apl", cashbackOffer: "5% Sentinel Cashback", icon: "Package", bg: "text-amber-400 bg-amber-500/10 border-amber-500/20" },
+  { id: "m3", name: "Amazon India", category: "Online Shopping", upiId: "amazonpay@apl", cashbackOffer: "5% Sentinal Cashback", icon: "Package", bg: "text-amber-400 bg-amber-500/10 border-amber-500/20" },
   { id: "m4", name: "Uber", category: "Rides & Cabs", upiId: "uber.india@axisbank", cashbackOffer: "₹40 off 1st ride", icon: "Car", bg: "text-emerald-400 bg-emerald-500/10 border-emerald-500/20" },
   { id: "m5", name: "Netflix India", category: "Entertainment", upiId: "netflix@citi", cashbackOffer: "Auto-pay reward active", icon: "Tv", bg: "text-rose-400 bg-rose-500/10 border-rose-500/20" },
   { id: "m6", name: "Starbucks", category: "Coffee & Dining", upiId: "starbucks@yesbank", cashbackOffer: "Free upgrade scratch reward", icon: "Coffee", bg: "text-amber-500 bg-amber-500/10 border-amber-500/20" }

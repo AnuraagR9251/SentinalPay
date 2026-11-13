@@ -56,7 +56,7 @@ export const RewardsPreview = () => {
           <p className="text-xs text-slate-300 mt-0.5">
             {unscratchedCards.length > 0
               ? `${unscratchedCards.length} scratch card${unscratchedCards.length > 1 ? 's' : ''} waiting to be scratched!`
-              : 'Keep paying with Senitenial Pay to win more!'}
+              : 'Keep paying with SentinalPay to win more!'}
           </p>
         </div>
 
@@ -139,7 +139,7 @@ export const RewardsPreview = () => {
               Invite Friends, Earn ₹101
             </h3>
             <p className="text-xs text-slate-300 mb-4">
-              Get ₹101 cashback in your Senitenial Wallet when your friend completes their first UPI payment!
+              Get ₹101 cashback in your Sentinal Wallet when your friend completes their first UPI payment!
             </p>
 
             <div className="flex items-center justify-between p-3 rounded-2xl bg-slate-800 border border-slate-700 mb-4">

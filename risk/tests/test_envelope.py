@@ -12,7 +12,7 @@ def test_envelope_hides_fallback_prior() -> None:
     out = attach_public_envelope(
         {
             "transaction_id": "tx-1",
-            "engine_version": "sentinelpay_v1",
+            "engine_version": "Sentinalpay_v1",
             "processing_ms": 4.2,
             "decision": "REVIEW",
             "ml": {"available": False, "fraud_probability": 0.5, "error": "missing_file"},
@@ -22,7 +22,7 @@ def test_envelope_hides_fallback_prior() -> None:
     assert out["model_available"] is False
     assert out["model_probability"] is None
     assert "ML_UNAVAILABLE" in out["reason_codes"]
-    assert out["policy_version"] == "sentinelpay_v1"
+    assert out["policy_version"] == "Sentinalpay_v1"
     assert out["inference_latency_ms"] == 4.2
     assert out["triggered_signals"][0]["name"] == "NEW_DEVICE"
 
@@ -31,7 +31,7 @@ def test_envelope_marks_uncalibrated_paysim() -> None:
     out = attach_public_envelope(
         {
             "transaction_id": "tx-uc",
-            "engine_version": "sentinelpay_v1",
+            "engine_version": "Sentinalpay_v1",
             "processing_ms": 3.0,
             "ml": {
                 "available": True,
@@ -52,7 +52,7 @@ def test_envelope_genuine_probability() -> None:
     out = attach_public_envelope(
         {
             "transaction_id": "tx-2",
-            "engine_version": "sentinelpay_v1",
+            "engine_version": "Sentinalpay_v1",
             "processing_ms": 3.0,
             "ml": {"available": True, "fraud_probability": 0.81},
             "rules": {"triggered_rules": []},

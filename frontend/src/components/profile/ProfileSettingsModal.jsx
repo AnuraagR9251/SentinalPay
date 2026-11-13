@@ -70,7 +70,7 @@ export const ProfileSettingsModal = () => {
           </div>
         </div>
 
-        {/* Sentinel AI Shield Audit Card */}
+        {/* Sentinal AI Shield Audit Card */}
         <div className="p-4 rounded-2xl bg-gradient-to-r from-blue-950/60 to-indigo-950/60 border border-blue-500/30 mb-4">
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2">

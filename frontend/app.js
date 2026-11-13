@@ -135,7 +135,7 @@ const DEFAULT_STATE = {
   merchants: [
     { id: "m1", name: "Zomato", category: "Food Delivery", upiId: "zomato@icici", offer: "Flat ₹50 cashback", icon: "utensils", color: "text-red-400 bg-red-500/10 border-red-500/20" },
     { id: "m2", name: "Swiggy", category: "Food & Instamart", upiId: "swiggy@hdfcbank", offer: "Up to ₹100 scratch card", icon: "shopping-bag", color: "text-orange-400 bg-orange-500/10 border-orange-500/20" },
-    { id: "m3", name: "Amazon India", category: "Online Shopping", upiId: "amazonpay@apl", offer: "5% Sentinel Cashback", icon: "package", color: "text-amber-400 bg-amber-500/10 border-amber-500/20" },
+    { id: "m3", name: "Amazon India", category: "Online Shopping", upiId: "amazonpay@apl", offer: "5% Sentinal Cashback", icon: "package", color: "text-amber-400 bg-amber-500/10 border-amber-500/20" },
     { id: "m4", name: "Uber", category: "Rides & Cabs", upiId: "uber.india@axisbank", offer: "₹40 off 1st ride", icon: "car", color: "text-emerald-400 bg-emerald-500/10 border-emerald-500/20" },
     { id: "m5", name: "Netflix India", category: "Entertainment", upiId: "netflix@citi", offer: "Auto-pay reward active", icon: "tv", color: "text-rose-400 bg-rose-500/10 border-rose-500/20" },
     { id: "m6", name: "Starbucks", category: "Coffee & Dining", upiId: "starbucks@yesbank", offer: "Free upgrade scratch reward", icon: "coffee", color: "text-amber-500 bg-amber-500/10 border-amber-500/20" }
